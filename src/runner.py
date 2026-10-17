@@ -45,6 +45,7 @@ from src.agent.state import (
 from src.config import AppConfig, ConfigurationError, load_config
 from src.logging import get_logger, setup_logging
 from src.storage.ledger import PublicationLedger
+from src.twitter.compat import ensure_proactor_event_loop
 
 logger = get_logger(__name__)
 
@@ -78,6 +79,7 @@ class RunnerOptions:
     grounding: bool | None = None
     config_path: Path | None = None
     log_level: str | None = None
+    context_dir: Path | None = None
 
     @property
     def is_scheduled(self) -> bool:
@@ -153,6 +155,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="Path to a custom YAML configuration file (default: config.yaml).",
     )
     parser.add_argument(
+        "--context-dir",
+        type=Path,
+        default=None,
+        metavar="PATH",
+        help="Path to markdown context directory (default: context).",
+    )
+    parser.add_argument(
         "--log-level",
         default=None,
         choices=["CRITICAL", "ERROR", "WARNING", "INFO", "DEBUG"],
@@ -192,6 +201,7 @@ def parse_args(argv: Sequence[str] | None = None) -> RunnerOptions:
         grounding=False if namespace.no_grounding else None,
         config_path=namespace.config,
         log_level=namespace.log_level,
+        context_dir=namespace.context_dir,
     )
 
 
@@ -222,7 +232,7 @@ class PipelineRunner:
         self.ledger = (
             ledger
             if ledger is not None
-            else PublicationLedger.open(self.config.effective_db_path)
+            else PublicationLedger.open(self.config.storage.db_path)
         )
         self.pipeline: Any = None
 
@@ -238,6 +248,8 @@ class PipelineRunner:
             self.config.agent.grounding = self.options.grounding
         if self.options.log_level:
             self.config.logging.level = self.options.log_level
+        if self.options.context_dir is not None:
+            self.config.agent.context_dir = self.options.context_dir
 
     def configure_logging(self) -> None:
         """Install the structured logging handlers for this run."""
@@ -506,6 +518,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         # argparse exits with an int (e.g. 2); our own validation raises
         # SystemExit with a message string, which must still map to a code.
         return exc.code if isinstance(exc.code, int) else EXIT_FAILURE
+
+    # Playwright spawns Chromium as an asyncio subprocess, which needs the
+    # proactor loop; twikit rewrites the policy to selector merely by being
+    # imported.  Declare the loop this process needs before creating it.
+    ensure_proactor_event_loop()
+
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    if hasattr(sys.stderr, "reconfigure"):
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
     try:
         return asyncio.run(run_async(options))

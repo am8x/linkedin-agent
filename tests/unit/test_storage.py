@@ -288,3 +288,92 @@ class TestPublicationLedger:
 
         second = PublicationLedger.open(path)
         assert second.is_published("1800000000000000001") is True
+
+    def test_record_publication_persists_curation_rationale(
+        self, ledger: PublicationLedger
+    ) -> None:
+        entry = make_entry(tweet_id="200", curation_rationale="Initial rationale")
+        ledger.claim(entry)
+        stored_pending = ledger.get("200")
+        assert stored_pending is not None
+        assert stored_pending.curation_rationale == "Initial rationale"
+
+        committed = ledger.record_publication(
+            "200",
+            linkedin_post_urn="urn:li:share:200",
+            linkedin_asset_urn=None,
+            curation_rationale="Updated comparative rationale: 10/10 technical depth.",
+        )
+        assert committed.status == PUBLISHED
+        assert (
+            committed.curation_rationale
+            == "Updated comparative rationale: 10/10 technical depth."
+        )
+
+        reloaded = ledger.get("200")
+        assert reloaded is not None
+        assert (
+            reloaded.curation_rationale
+            == "Updated comparative rationale: 10/10 technical depth."
+        )
+
+    def test_backward_compatibility_migrates_table_without_curation_rationale(
+        self, tmp_path: Path
+    ) -> None:
+        import sqlite3
+
+        db_path = tmp_path / "legacy.db"
+        # Create legacy table without curation_rationale
+        conn = sqlite3.connect(str(db_path))
+        conn.execute(
+            """
+            CREATE TABLE publication_ledger (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                tweet_id TEXT UNIQUE NOT NULL,
+                author_handle TEXT NOT NULL,
+                tweet_created_at TEXT NOT NULL,
+                tweet_text TEXT NOT NULL,
+                tweet_url TEXT NOT NULL,
+                linkedin_post_urn TEXT,
+                linkedin_asset_urn TEXT,
+                commentary_text TEXT NOT NULL,
+                status TEXT NOT NULL,
+                error_message TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now', 'utc')),
+                published_at TEXT
+            );
+            """
+        )
+        conn.execute(
+            """
+            INSERT INTO publication_ledger (
+                tweet_id, author_handle, tweet_created_at, tweet_text,
+                tweet_url, commentary_text, status
+            ) VALUES ('legacy_1', 'someone', '2026-10-17T00:00:00Z', 'text', 'url', 'commentary', 'PUBLISHED')
+            """
+        )
+        conn.commit()
+        conn.close()
+
+        # Now open via PublicationLedger - it should run migration and add column seamlessly
+        ledger = PublicationLedger.open(db_path)
+        legacy_entry = ledger.get("legacy_1")
+        assert legacy_entry is not None
+        assert legacy_entry.tweet_id == "legacy_1"
+        assert legacy_entry.curation_rationale is None
+
+        # Verify new writes with curation_rationale succeed on the migrated database
+        new_entry = make_entry(
+            tweet_id="new_1", curation_rationale="Post-migration rationale"
+        )
+        ledger.claim(new_entry)
+        ledger.commit_publication(
+            "new_1",
+            linkedin_post_urn="urn:li:1",
+            linkedin_asset_urn=None,
+            curation_rationale="Rationale committed",
+        )
+        reloaded = ledger.get("new_1")
+        assert reloaded is not None
+        assert reloaded.curation_rationale == "Rationale committed"
+        ledger.close()

@@ -20,11 +20,14 @@ GOOGLE_API_KEY="AIzaSy..."          # Required: Google Gemini API key
 LINKEDIN_ACCESS_TOKEN="AQV_..."     # Required: OAuth 2.0 access token with w_member_social scope
 LINKEDIN_PERSON_URN="8675309"       # Required: LinkedIn member person ID digits (e.g. 12345678)
 
-# Optional Path Overrides
-TWITTER_COOKIES_PATH="cookies.json" # Default: cookies.json
-SIDEKICK_DB_PATH="state/sidekick.db" # Default: state/sidekick.db
-CONFIG_PATH="config.yaml"           # Default: config.yaml
+# Configuration Location
+CONFIG_PATH="config.yaml"           # Default: config.yaml (selects the YAML file)
 ```
+
+> **Single source of truth for paths.** File-system locations are configured
+> **only** in `config.yaml`: `twitter.cookies_path` for the Twitter cookie
+> export and `storage.db_path` for the publication ledger (see §2). No
+> environment variable overrides them, so each path has exactly one home.
 
 ---
 

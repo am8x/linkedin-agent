@@ -14,6 +14,7 @@ from __future__ import annotations
 import uuid
 import warnings
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from google.adk.agents import SequentialAgent
@@ -22,12 +23,17 @@ from google.adk.sessions import InMemorySessionService
 from google.genai import types
 
 from src.agent.capture import CardCaptureAgent, create_capture_agent
-from src.agent.commentary import create_commentary_agent
+from src.agent.commentary import create_commentary_agent, synthesize_commentary
+from src.agent.context import ContextLoader
+from src.agent.curator import TweetCuratorAgent, create_curator_agent
 from src.agent.ingestion import TweetIngestionAgent, create_ingestion_agent
 from src.agent.publisher import LinkedInPublisherAgent, create_publisher_agent
 from src.agent.state import (
+    KEY_COMMENTARY,
+    KEY_CURATION_RATIONALE,
     KEY_ERROR,
     KEY_EXECUTION_STATUS,
+    KEY_SELECTED_TWEET,
     PipelineSessionState,
     new_session_state,
 )
@@ -37,9 +43,7 @@ logger = get_logger(__name__)
 
 PIPELINE_APPLICATION_NAME = "linkedin_sidekick"
 PIPELINE_AGENT_NAME = "linkedin_sidekick_pipeline"
-PIPELINE_DESCRIPTION = (
-    "Sequential tweet-to-LinkedIn pipeline: ingest → capture → comment → publish."
-)
+PIPELINE_DESCRIPTION = "Sequential tweet-to-LinkedIn pipeline: ingest → curate → capture → comment → publish."
 DEFAULT_USER_ID = "sidekick"
 TRIGGER_MESSAGE = "Execute the LinkedIn Sidekick pipeline."
 
@@ -52,12 +56,16 @@ class PipelineComponents:
 
     ledger: Any = None
     fetcher: Any = None
+    curator_evaluator: Any = None
     renderer_factory: Any = None
     linkedin_client: Any = None
     linkedin_client_factory: Any = None
     publisher_factory: Any = None
     confirm_prompt: Any = None
     llm_model: Any = None
+    context_loader: Any = None
+    commentary_generator: Any = None
+    capture_card: Any = None
 
 
 @dataclass
@@ -77,8 +85,13 @@ class PipelineRunResult:
 
     @property
     def blocked(self) -> bool:
-        """True when the run finished cleanly without publishing anything."""
-        return self.status in {"NO_NEW_TWEETS", "SKIPPED", "DRY_RUN"}
+        return self.status in {
+            "NO_NEW_TWEETS",
+            "NO_QUALIFIED_CANDIDATE",
+            "SKIPPED",
+            "DRY_RUN",
+            "USER_CANCELLED",
+        }
 
     def get(self, key: str, default: Any = None) -> Any:
         return self.state.get(key, default)
@@ -108,9 +121,11 @@ def build_pipeline(
     publisher_factory: Any = None,
     confirm_prompt: Any = None,
     llm_model: Any = None,
+    curator_evaluator: Any = None,
+    context_loader: Any = None,
     name: str = PIPELINE_AGENT_NAME,
 ) -> SequentialAgent:
-    """Assemble the four-stage ``SequentialAgent`` from configuration.
+    """Assemble the five-stage ``SequentialAgent`` from configuration.
 
     Individual stages can also be overridden directly via keyword arguments;
     :class:`PipelineComponents` is the tidier route when injecting many.
@@ -142,14 +157,65 @@ def build_pipeline(
             confirm_prompt if confirm_prompt is not None else components.confirm_prompt
         )
         llm_model = llm_model if llm_model is not None else components.llm_model
+        curator_evaluator = (
+            curator_evaluator
+            if curator_evaluator is not None
+            else components.curator_evaluator
+        )
+        context_loader = (
+            context_loader if context_loader is not None else components.context_loader
+        )
+        commentary_generator = components.commentary_generator
+        capture_card = components.capture_card
+    else:
+        commentary_generator = None
+        capture_card = None
+
+    context_dir = getattr(
+        getattr(config, "agent", None), "context_dir", Path("context")
+    )
+    loader = context_loader or ContextLoader(context_dir)
+    try:
+        pipeline_context = loader.load()
+    except Exception as exc:
+        logger.warning("Could not load markdown context from %s: %s", context_dir, exc)
+        pipeline_context = None
 
     ingestion: TweetIngestionAgent = create_ingestion_agent(
         config, ledger=ledger, fetcher=fetcher
     )
+    curator: TweetCuratorAgent = create_curator_agent(
+        context=pipeline_context,
+        decision_evaluator=curator_evaluator,
+        model_name=getattr(getattr(config, "agent", None), "model", "gemini-3.8-flash"),
+    )
     capture: CardCaptureAgent = create_capture_agent(
         config, renderer_factory=renderer_factory
     )
-    commentary = create_commentary_agent(config.agent, model=llm_model)
+    commentary = create_commentary_agent(
+        config.agent,
+        model=llm_model,
+        context=pipeline_context,
+    )
+
+    async def _default_regenerate_commentary(state: Any) -> dict[str, Any]:
+        sel = state.get(KEY_SELECTED_TWEET) or {}
+        rat = str(state.get(KEY_CURATION_RATIONALE) or "")
+        comm = await synthesize_commentary(
+            sel,
+            rat,
+            config=config.agent,
+            model=llm_model,
+            context=pipeline_context,
+        )
+        return {
+            KEY_COMMENTARY: comm.model_dump(mode="json"),
+            "commentary_text": comm.text,
+        }
+
+    async def _default_capture_card(state: Any) -> dict[str, Any]:
+        return await capture._capture(state)
+
     publisher: LinkedInPublisherAgent = create_publisher_agent(
         config,
         ledger=ledger,
@@ -157,6 +223,8 @@ def build_pipeline(
         client_factory=linkedin_client_factory,
         publisher_factory=publisher_factory,
         confirm_prompt=confirm_prompt,
+        commentary_generator=commentary_generator or _default_regenerate_commentary,
+        capture_card=capture_card or _default_capture_card,
     )
 
     ctx = _suppress_sequential_deprecation()
@@ -164,7 +232,7 @@ def build_pipeline(
         pipeline = SequentialAgent(
             name=name,
             description=PIPELINE_DESCRIPTION,
-            sub_agents=[ingestion, capture, commentary, publisher],
+            sub_agents=[ingestion, curator, capture, commentary, publisher],
         )
     finally:
         ctx.__exit__(None, None, None)

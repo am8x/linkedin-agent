@@ -28,8 +28,11 @@ from google.adk.models.llm_response import LlmResponse
 from google.genai import types
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
+from src.agent.context import PipelineContext
+from src.agent.guardrails import StyleGuardrail
 from src.agent.state import (
     KEY_COMMENTARY,
+    KEY_CURATION_RATIONALE,
     KEY_ERROR,
     KEY_EXECUTION_STATUS,
     KEY_SELECTED_TWEET,
@@ -46,7 +49,7 @@ GROUNDING_ENABLED_KEY = "grounding_enabled"
 GROUNDING_OBSERVED_KEY = "grounding_observed"
 
 MIN_COMMENTARY_CHARS = 10
-MAX_COMMENTARY_CHARS = 600
+MAX_COMMENTARY_CHARS = 1200
 
 HASHTAG_PATTERN = re.compile(r"#\w+")
 SENTENCE_SPLIT_PATTERN = re.compile(r"(?<=[.!?])\s+")
@@ -71,6 +74,7 @@ class Commentary(BaseModel):
         min_length=MIN_COMMENTARY_CHARS,
         max_length=MAX_COMMENTARY_CHARS,
     )
+    paragraph_count: int = 1
     character_count: int = 0
     model_name: str = "unknown"
     grounded: bool = True
@@ -81,6 +85,8 @@ class Commentary(BaseModel):
         self.character_count = len(self.text)
         if self.generated_at.tzinfo is None:
             self.generated_at = self.generated_at.replace(tzinfo=UTC)
+        paragraphs = [p for p in re.split(r"\n\s*\n", self.text.strip()) if p.strip()]
+        self.paragraph_count = max(1, len(paragraphs))
         return self
 
     @property
@@ -145,19 +151,32 @@ def normalise_commentary_text(
     if not text:
         raise CommentaryGenerationError("model returned an empty completion")
 
-    # Drop markdown emphasis and list bullets that some models add anyway.
-    text = re.sub(r"(\*\*|__|\*|`)", "", text)
-    text = re.sub(r"^\s*[-•\d]+[.)]?\s+", "", text)
-    text = " ".join(text.split())
+    # Split into paragraphs to preserve layout
+    raw_paragraphs = [p.strip() for p in re.split(r"\n\s*\n", text) if p.strip()]
+    if not raw_paragraphs:
+        raise CommentaryGenerationError("model returned an empty completion")
 
-    # Quotes are stripped before the filler rule so a model that wraps its whole
-    # answer in quotation marks still gets its preamble removed.
-    text = strip_wrapping_quotes(text)
-    text = FILLER_PREFIX_PATTERN.sub("", text)
-    text = strip_wrapping_quotes(text)
-    text = strip_hashtags(text)
-    text = strip_wrapping_quotes(text)
-    text = trim_to_sentences(text, max_sentences)
+    cleaned_paragraphs: list[str] = []
+    for p in raw_paragraphs:
+        # Drop markdown emphasis and list bullets that some models add anyway.
+        p = re.sub(r"(\*\*|__|\*|`)", "", p)
+        p = re.sub(r"^\s*[-•\d]+[.)]?\s+", "", p)
+        p = " ".join(p.split())
+
+        # Quotes are stripped before the filler rule so a model that wraps its whole
+        # answer in quotation marks still gets its preamble removed.
+        p = strip_wrapping_quotes(p)
+        p = FILLER_PREFIX_PATTERN.sub("", p)
+        p = strip_wrapping_quotes(p)
+        p = strip_hashtags(p)
+        p = strip_wrapping_quotes(p)
+        if len(raw_paragraphs) == 1:
+            p = trim_to_sentences(p, max_sentences)
+        p = strip_wrapping_quotes(p)
+        if p:
+            cleaned_paragraphs.append(p)
+
+    text = "\n\n".join(cleaned_paragraphs)
     text = truncate_on_word_boundary(text, max_chars)
     text = strip_wrapping_quotes(text)
 
@@ -172,37 +191,73 @@ def normalise_commentary_text(
 # ---------------------------------------------------------------------------
 # Instruction construction
 # ---------------------------------------------------------------------------
-def build_prompt(template: str, tweet: dict[str, Any] | None) -> str:
+def build_prompt(
+    template: str,
+    tweet: dict[str, Any] | None,
+    *,
+    curation_rationale: str | None = None,
+    writer_prompt: str | None = None,
+) -> str:
     """Compose the final instruction for a given tweet payload."""
-    if not tweet:
-        return template
+    sections: list[str] = []
+    if writer_prompt:
+        sections.append(writer_prompt)
+    else:
+        sections.append(template)
 
-    handle = tweet.get("author_handle", "unknown")
-    name = tweet.get("author_name", handle)
-    permalink = tweet.get("permalink", "")
-    text = tweet.get("text", "")
+    if curation_rationale:
+        sections.append(f"## Curator Selection Rationale\n{curation_rationale}")
 
-    return (
-        f"{template}\n\n"
-        "--- TWEET CONTEXT ---\n"
-        f"Author: {name} (@{handle})\n"
-        f"URL: {permalink}\n"
-        f"Posted: {tweet.get('created_at', '')}\n"
-        f"Text: {text}\n"
-        "--- END TWEET CONTEXT ---\n\n"
-        "Reply with the post body only. No preamble, no quotes, no hashtags, "
-        "no emoji, at most two sentences."
-    )
+    if tweet:
+        handle = tweet.get("author_handle", "unknown")
+        name = tweet.get("author_name", handle)
+        permalink = tweet.get("permalink", "")
+        text = tweet.get("text", "")
+
+        sections.append(
+            "--- TWEET CONTEXT ---\n"
+            f"Author: {name} (@{handle})\n"
+            f"URL: {permalink}\n"
+            f"Posted: {tweet.get('created_at', '')}\n"
+            f"Text: {text}\n"
+            "--- END TWEET CONTEXT ---"
+        )
+        if writer_prompt:
+            sections.append(
+                "Synthesize a structured micro-post following the 2-3 paragraph layout in the style guide. "
+                "Reply with the post body only. No preamble, zero quotes, zero hashtags, zero emojis, zero em dashes."
+            )
+        else:
+            sections.append(
+                "Reply with the post body only. No preamble, no quotes, no hashtags, "
+                "no emoji, at most two sentences."
+            )
+
+    return "\n\n".join(sections)
 
 
 def build_instruction_provider(
     prompt_template: str,
+    *,
+    context: PipelineContext | None = None,
 ) -> Callable[[ReadonlyContext], str]:
-    """Return an ADK ``InstructionProvider`` that renders the tweet from state."""
+    """Return an ADK ``InstructionProvider`` that renders the tweet and persona from state."""
 
-    def provider(context: ReadonlyContext) -> str:
-        tweet = context.state.get(KEY_SELECTED_TWEET)
-        return build_prompt(prompt_template, tweet if isinstance(tweet, dict) else None)
+    def provider(context_ro: Any) -> str:
+        state = getattr(context_ro, "state", None)
+        if state is None and hasattr(context_ro, "session"):
+            state = getattr(context_ro.session, "state", None)
+        state = state or {}
+
+        tweet = state.get(KEY_SELECTED_TWEET)
+        rationale = state.get(KEY_CURATION_RATIONALE)
+        writer_prompt = context.writer_system_prompt if context is not None else None
+        return build_prompt(
+            prompt_template,
+            tweet if isinstance(tweet, dict) else None,
+            curation_rationale=rationale if isinstance(rationale, str) else None,
+            writer_prompt=writer_prompt,
+        )
 
     return provider
 
@@ -260,6 +315,7 @@ def _mark_grounding_enabled(callback_context: CallbackContext) -> None:
 def _publish_commentary(
     callback_context: CallbackContext,
     config: AgentConfig,
+    guardrail: StyleGuardrail | None = None,
 ) -> types.Content | None:
     """Validate the completion and write the ``Commentary`` into session state."""
     state = callback_context.state
@@ -279,6 +335,16 @@ def _publish_commentary(
             str(raw or ""),
             max_sentences=config.max_sentences,
         )
+        if guardrail is not None:
+            guard_result = guardrail.validate(text)
+            if not guard_result.is_valid:
+                violation_summary = "; ".join(
+                    f"{v.violation_type}: {v.detail}" for v in guard_result.violations
+                )
+                raise CommentaryGenerationError(
+                    f"Style guardrail violations: {violation_summary}"
+                )
+
         grounded = bool(
             state.get(GROUNDING_OBSERVED_KEY) or state.get(GROUNDING_ENABLED_KEY)
         )
@@ -298,11 +364,67 @@ def _publish_commentary(
     state[KEY_COMMENTARY] = commentary.model_dump(mode="json")
     state[KEY_ERROR] = None
     logger.info(
-        "Synthesised %d-character commentary (grounded=%s)",
+        "Synthesised %d-character commentary (grounded=%s, paragraphs=%d)",
         commentary.character_count,
         commentary.grounded,
+        commentary.paragraph_count,
     )
     return None
+
+
+def _build_after_model_callback(
+    model: Any | None = None,
+    guardrail: StyleGuardrail | None = None,
+) -> Callable[[CallbackContext, LlmResponse], Any]:
+    """Bind the model and guardrail into the after-model callback for corrective re-prompting."""
+
+    async def callback(
+        callback_context: CallbackContext,
+        llm_response: LlmResponse,
+    ) -> LlmResponse | None:
+        _record_grounding(callback_context, llm_response)
+        if guardrail is None:
+            return None
+
+        if not llm_response.content or not llm_response.content.parts:
+            return None
+        raw_text = "".join(part.text or "" for part in llm_response.content.parts)
+        if not raw_text.strip():
+            return None
+
+        result = guardrail.validate(raw_text)
+        if result.is_valid:
+            return None
+
+        if callback_context.state.get("_guardrail_retry_attempted"):
+            logger.warning(
+                "Guardrail violations persist after corrective re-prompt: %s",
+                [v.detail for v in result.violations],
+            )
+            return None
+
+        callback_context.state["_guardrail_retry_attempted"] = True
+        logger.info(
+            "Guardrail violation in completion: %s. Triggering corrective re-prompt.",
+            [v.detail for v in result.violations],
+        )
+
+        if model is not None and hasattr(model, "generate_content_async"):
+            feedback = result.feedback_prompt
+            reprompt_req = types.Content(
+                role="user",
+                parts=[types.Part(text=f"Original output:\n{raw_text}\n\n{feedback}")],
+            )
+            llm_req = LlmRequest(contents=[reprompt_req])
+            try:
+                async for resp in model.generate_content_async(llm_req, stream=False):
+                    return resp
+            except Exception as exc:
+                logger.warning("Corrective re-prompt failed: %s", exc)
+
+        return None
+
+    return callback
 
 
 # ---------------------------------------------------------------------------
@@ -312,6 +434,8 @@ def create_commentary_agent(
     config: AgentConfig,
     *,
     model: Any | None = None,
+    context: PipelineContext | None = None,
+    guardrail: StyleGuardrail | None = None,
     name: str = COMMENTARY_AGENT_NAME,
 ) -> LlmAgent:
     """Build the ADK ``LlmAgent`` that synthesises LinkedIn commentary.
@@ -321,6 +445,8 @@ def create_commentary_agent(
             prompt template).
         model: Optional ADK ``BaseLlm`` override — used by tests to avoid
             network access.
+        context: Optional PipelineContext holding markdown style guides and personas.
+        guardrail: Optional StyleGuardrail validator instance.
         name: Agent name inside the pipeline.
     """
     tools: list[Any] = []
@@ -332,7 +458,9 @@ def create_commentary_agent(
         else:
             tools.append(google_search)
 
-    after_agent = _build_after_agent_callback(config)
+    guard = guardrail or (StyleGuardrail() if context is not None else None)
+    after_model = _build_after_model_callback(model=model, guardrail=guard)
+    after_agent = _build_after_agent_callback(config, guardrail=guard)
 
     agent = LlmAgent(
         name=name,
@@ -341,12 +469,12 @@ def create_commentary_agent(
             "from the selected tweet."
         ),
         model=model if model is not None else config.model,
-        instruction=build_instruction_provider(config.prompt_template),
+        instruction=build_instruction_provider(config.prompt_template, context=context),
         tools=tools,
         output_key=COMMENTARY_OUTPUT_KEY,
         before_agent_callback=_mark_grounding_enabled if tools else None,
         before_model_callback=_guard_without_selected_tweet,
-        after_model_callback=_record_grounding,
+        after_model_callback=after_model,
         after_agent_callback=after_agent,
         disallow_transfer_to_parent=True,
         disallow_transfer_to_peers=True,
@@ -362,14 +490,112 @@ def create_commentary_agent(
 
 def _build_after_agent_callback(
     config: AgentConfig,
+    guardrail: StyleGuardrail | None = None,
 ) -> Callable[[CallbackContext], types.Content | None]:
-    """Bind the agent config into the after-agent normalisation callback."""
+    """Bind the agent config and guardrail into the after-agent normalisation callback."""
 
     def callback(callback_context: CallbackContext) -> types.Content | None:
-        return _publish_commentary(callback_context, config)
+        return _publish_commentary(callback_context, config, guardrail=guardrail)
 
     callback.__name__ = "_publish_commentary"
     return callback
+
+
+async def synthesize_commentary(
+    tweet: dict[str, Any],
+    rationale: str = "",
+    *,
+    config: AgentConfig | None = None,
+    model: Any | None = None,
+    context: PipelineContext | None = None,
+    guardrail: StyleGuardrail | None = None,
+) -> Commentary:
+    """Directly synthesise and validate commentary for a tweet.
+
+    Used by the review workflow for on-demand regeneration and runner-up synthesis.
+    """
+    cfg = config or AgentConfig()
+    prompt_text = build_prompt(
+        cfg.prompt_template,
+        tweet,
+        curation_rationale=rationale,
+        writer_prompt=context.writer_system_prompt if context else None,
+    )
+    guard = guardrail or (StyleGuardrail() if context is not None else None)
+
+    class _ContextStub:
+        session = type(
+            "SessionStub",
+            (),
+            {
+                "state": {
+                    KEY_SELECTED_TWEET: tweet,
+                    KEY_CURATION_RATIONALE: rationale,
+                }
+            },
+        )()
+
+    from typing import cast
+
+    instruction_fn = build_instruction_provider(cfg.prompt_template, context=context)
+    system_instruction = instruction_fn(cast(Any, _ContextStub()))
+
+    raw_text = ""
+    if model is not None and hasattr(model, "generate_content_async"):
+        llm_req = LlmRequest(
+            contents=[types.Content(role="user", parts=[types.Part(text=prompt_text)])]
+        )
+        async for resp in model.generate_content_async(llm_req, stream=False):
+            if resp.content and resp.content.parts:
+                raw_text += "".join(p.text or "" for p in resp.content.parts)
+    else:
+        from google import genai
+
+        client = genai.Client()
+        model_name = cfg.model if not isinstance(model, str) else model
+        response = await client.aio.models.generate_content(
+            model=model_name,
+            contents=prompt_text,
+            config=types.GenerateContentConfig(
+                system_instruction=system_instruction,
+                temperature=0.8,
+            ),
+        )
+        raw_text = response.text or ""
+
+    text = normalise_commentary_text(raw_text, max_sentences=cfg.max_sentences)
+    if guard is not None:
+        validation = guard.validate(text)
+        if (
+            not validation.is_valid
+            and model is not None
+            and hasattr(model, "generate_content_async")
+        ):
+            feedback = validation.feedback_prompt
+            reprompt_req = types.Content(
+                role="user",
+                parts=[types.Part(text=f"Original output:\n{text}\n\n{feedback}")],
+            )
+            llm_req = LlmRequest(contents=[reprompt_req])
+            retry_text = ""
+            try:
+                async for resp in model.generate_content_async(llm_req, stream=False):
+                    if resp.content and resp.content.parts:
+                        retry_text += "".join(p.text or "" for p in resp.content.parts)
+                if retry_text.strip():
+                    text = normalise_commentary_text(
+                        retry_text, max_sentences=cfg.max_sentences
+                    )
+            except Exception as exc:
+                logger.warning(
+                    "Corrective re-prompt failed in synthesize_commentary: %s", exc
+                )
+
+    return Commentary(
+        text=text,
+        model_name=cfg.model,
+        grounded=False,
+    )
 
 
 # Backwards-compatible alias mirroring the naming used in ``plan.md``.
@@ -391,6 +617,7 @@ __all__ = [
     "normalise_commentary_text",
     "strip_hashtags",
     "strip_wrapping_quotes",
+    "synthesize_commentary",
     "trim_to_sentences",
     "truncate_on_word_boundary",
 ]

@@ -44,6 +44,7 @@ _COLUMNS = (
     "commentary_text",
     "status",
     "error_message",
+    "curation_rationale",
     "created_at",
     "published_at",
 )
@@ -73,6 +74,7 @@ class LedgerEntry(BaseModel):
     commentary_text: str = ""
     status: LedgerStatus = PENDING
     error_message: str | None = None
+    curation_rationale: str | None = None
     created_at: str | None = None
     published_at: str | None = None
 
@@ -185,8 +187,8 @@ class PublicationLedger:
                     INSERT INTO publication_ledger (
                         tweet_id, author_handle, tweet_created_at, tweet_text,
                         tweet_url, linkedin_post_urn, linkedin_asset_urn,
-                        commentary_text, status, error_message, published_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        commentary_text, status, error_message, curation_rationale, published_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(tweet_id) DO UPDATE SET
                         author_handle = excluded.author_handle,
                         tweet_created_at = excluded.tweet_created_at,
@@ -195,6 +197,7 @@ class PublicationLedger:
                         commentary_text = excluded.commentary_text,
                         status = excluded.status,
                         error_message = excluded.error_message,
+                        curation_rationale = excluded.curation_rationale,
                         published_at = excluded.published_at
                     """,
                     (
@@ -208,6 +211,7 @@ class PublicationLedger:
                         claimed.commentary_text,
                         claimed.status,
                         claimed.error_message,
+                        claimed.curation_rationale,
                         claimed.published_at,
                     ),
                 )
@@ -215,29 +219,31 @@ class PublicationLedger:
             raise DuplicatePublicationError(entry.tweet_id) from exc
         return claimed
 
-    def commit_publication(
+    def record_publication(
         self,
         tweet_id: str,
         *,
-        linkedin_post_urn: str | None,
-        linkedin_asset_urn: str | None,
+        linkedin_post_urn: str | None = None,
+        linkedin_asset_urn: str | None = None,
+        curation_rationale: str | None = None,
         published_at: str | None = None,
     ) -> LedgerEntry:
-        """Mark a claimed tweet as successfully published."""
+        """Mark a claimed tweet as successfully published, persisting curation rationale."""
         timestamp = published_at or _utc_now_iso()
         with self.database.session() as connection:
             connection.execute(
                 """
                 UPDATE publication_ledger
                    SET status = ?, linkedin_post_urn = ?,
-                       linkedin_asset_urn = ?, published_at = ?,
-                       error_message = NULL
+                       linkedin_asset_urn = ?, curation_rationale = ?,
+                       published_at = ?, error_message = NULL
                  WHERE tweet_id = ?
                 """,
                 (
                     PUBLISHED,
                     linkedin_post_urn,
                     linkedin_asset_urn,
+                    curation_rationale,
                     timestamp,
                     tweet_id,
                 ),
@@ -246,6 +252,24 @@ class PublicationLedger:
         if recorded is None:  # pragma: no cover - defensive
             raise LookupError(f"Ledger row for tweet {tweet_id} disappeared.")
         return recorded
+
+    def commit_publication(
+        self,
+        tweet_id: str,
+        *,
+        linkedin_post_urn: str | None,
+        linkedin_asset_urn: str | None,
+        curation_rationale: str | None = None,
+        published_at: str | None = None,
+    ) -> LedgerEntry:
+        """Mark a claimed tweet as successfully published."""
+        return self.record_publication(
+            tweet_id,
+            linkedin_post_urn=linkedin_post_urn,
+            linkedin_asset_urn=linkedin_asset_urn,
+            curation_rationale=curation_rationale,
+            published_at=published_at,
+        )
 
     def record_outcome(self, entry: LedgerEntry) -> LedgerEntry:
         """Upsert a non-publishing outcome (``DRY_RUN``/``SKIPPED``/``FAILED``).
@@ -259,14 +283,15 @@ class PublicationLedger:
                     INSERT INTO publication_ledger (
                         tweet_id, author_handle, tweet_created_at, tweet_text,
                         tweet_url, linkedin_post_urn, linkedin_asset_urn,
-                        commentary_text, status, error_message, published_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        commentary_text, status, error_message, curation_rationale, published_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(tweet_id) DO UPDATE SET
                         status = excluded.status,
                         linkedin_post_urn = excluded.linkedin_post_urn,
                         linkedin_asset_urn = excluded.linkedin_asset_urn,
                         commentary_text = excluded.commentary_text,
                         error_message = excluded.error_message,
+                        curation_rationale = excluded.curation_rationale,
                         published_at = excluded.published_at
                       WHERE publication_ledger.status != ?
                     """,
@@ -281,6 +306,7 @@ class PublicationLedger:
                         entry.commentary_text,
                         entry.status,
                         entry.error_message,
+                        entry.curation_rationale,
                         entry.published_at,
                         PUBLISHED,
                     ),

@@ -6,13 +6,40 @@
 twitter:
   cookies_path: "cookies.json"
   accounts:
-    - "sama"
-    - "karpathy"
-    - "ylecun"
+  - "sama"  # Sam Altman - CEO, OpenAI
+  - "karpathy"  # Andrej Karpathy - Founder, Eureka Labs / Former Director of AI, Tesla
+  - "ylecun"  # Yann LeCun - Chief AI Scientist, Meta
+  - "miramurati"  # Mira Murati - Founder & CEO, Thinking Machines Lab / Former CTO, OpenAI
+  - "elonmusk"  # Elon Musk - CEO, Tesla & xAI / Owner, X
+  - "antonosika"  # Anton Osika - Founder & CEO, Lovable
+  - "jack"  # Jack Dorsey - Co-founder & Block Head, Block (Square) / Former CEO, Twitter
+  - "finkd"  # Mark Zuckerberg - Founder & CEO, Meta
+  - "asha_shar"  # Asha Sharma - CEO, Xbox & Gaming / Former President, CoreAI at Microsoft
+  - "AravSrinivas"  # Aravind Srinivas - Co-founder & CEO, Perplexity AI
+  - "DarioAmodei"  # Dario Amodei - Co-founder & CEO, Anthropic
+  - "arthurmensch"  # Arthur Mensch - Co-founder & CEO, Mistral AI
+  # - "alexandr_wang"  # Alexandr Wang - Founder & CEO, Scale AI
+  - "demishassabis"  # Demis Hassabis - Co-founder & CEO, Google DeepMind
+  - "satyanadella"  # Satya Nadella - Chairman & CEO, Microsoft
+  - "sundarpichai"  # Sundar Pichai - CEO, Alphabet & Google
+  - "tim_cook"  # Tim Cook - CEO, Apple
+  - "clemdelangue"  # Clément Delangue - Co-founder & CEO, Hugging Face
+  - "sama_fast"  # Richard Socher - CEO, You.com
+  - "RichardSocher"  # Richard Socher - Founder & CEO, You.com
+  - "gdb"  # Greg Brockman - Co-founder & President, OpenAI
+  - "ilyasut"  # Ilya Sutskever - Co-founder & Chief Scientist, Safe Superintelligence (SSI)
+  - "danny_postma"  # Danny Postma - Founder & CEO, HeadshotPro
+  - "rauchg"  # Guillermo Rauch - CEO, Vercel
+  - "levelsio"  # Pieter Levels - Founder, PhotoAI & Nomad List
+  - "paraga"  # Parag Agrawal - Founder, Parallel Web Systems / Former CEO, Twitter
+  - "ghodsi_ali"  # Ali Ghodsi - Co-founder & CEO, Databricks
+  - "swyx"  # Shawn Wang (swyx) - Founder, Smarter Web / AI Engineer Foundation
+  - "drfeifei"  # Fei-Fei Li - Co-founder & CEO, World Labs
+  - "alliekmiller"  # Allie K. Miller - Top AI Advisor, Investor & Former Head of AI at AWS
   lookback_hours: 12
   exclude_replies: true
   exclude_retweets: true
-  max_tweets_per_account: 40
+  max_tweets_per_account: 24
 
 # Screenshot capture styling via Playwright
 render:
@@ -25,7 +52,7 @@ render:
 
 # Google ADK Generative AI Commentary Settings
 agent:
-  model: "gemini-3.8-flash"  # Gemini model identifier
+  model: "gemini-flash-lite-latest"  # Gemini model identifier
   max_sentences: 2
   grounding: true            # Enable real-time Google Search grounding
   prompt_template: |

@@ -31,6 +31,7 @@ CREATE TABLE IF NOT EXISTS publication_ledger (
         status IN ('PENDING', 'PUBLISHED', 'SKIPPED', 'DRY_RUN', 'FAILED')
     ),
     error_message TEXT,
+    curation_rationale TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now', 'utc')),
     published_at TEXT
 );
@@ -116,8 +117,24 @@ class Database:
         connection = self.connect()
         try:
             connection.executescript(SCHEMA_SQL)
+            self._ensure_schema_compatibility(connection)
         finally:
             self.release(connection)
+
+    def _ensure_schema_compatibility(self, connection: sqlite3.Connection) -> None:
+        """Non-destructive migration for existing databases."""
+        cursor = connection.cursor()
+        for table_name in ("publication_ledger", "publications"):
+            cursor.execute(
+                f"SELECT name FROM sqlite_master WHERE type='table' AND name='{table_name}'"
+            )
+            if cursor.fetchone():
+                cursor.execute(f"PRAGMA table_info({table_name})")
+                columns = {row[1] for row in cursor.fetchall()}
+                if "curation_rationale" not in columns:
+                    cursor.execute(
+                        f"ALTER TABLE {table_name} ADD COLUMN curation_rationale TEXT"
+                    )
 
     def is_initialized(self) -> bool:
         """Whether the ``publication_ledger`` table already exists."""

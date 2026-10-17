@@ -96,6 +96,7 @@ class AgentConfig(_Base):
     max_sentences: int = Field(default=2, ge=1, le=5)
     grounding: bool = True
     prompt_template: str = DEFAULT_PROMPT_TEMPLATE
+    context_dir: Path = Field(default=Path("context"))
 
 
 class SchedulerConfig(_Base):
@@ -128,13 +129,16 @@ class LoggingConfig(_Base):
 
 
 class Secrets(_Base):
-    """Credentials resolved from the process environment."""
+    """Credentials resolved from the process environment.
+
+    Only genuinely secret material lives here.  File-system locations (the
+    Twitter cookie export, the ledger database) are ordinary configuration and
+    therefore have exactly one home: ``config.yaml``.
+    """
 
     google_api_key: SecretStr | None = None
     linkedin_access_token: SecretStr | None = None
     linkedin_person_urn: str | None = None
-    twitter_cookies_path: Path | None = None
-    db_path_override: Path | None = None
 
     @classmethod
     def from_env(cls, env: dict[str, str] | None = None) -> Secrets:
@@ -152,16 +156,12 @@ class Secrets(_Base):
         if person_urn is not None:
             person_urn = person_urn.rsplit(":", 1)[-1].strip() or None
 
-        cookies = _clean("TWITTER_COOKIES_PATH")
-        db_path = _clean("SIDEKICK_DB_PATH")
         linkedin_token = _clean("LINKEDIN_ACCESS_TOKEN")
 
         return cls(
             google_api_key=SecretStr(google_key) if google_key else None,
             linkedin_access_token=SecretStr(linkedin_token) if linkedin_token else None,
             linkedin_person_urn=person_urn,
-            twitter_cookies_path=Path(cookies) if cookies else None,
-            db_path_override=Path(db_path) if db_path else None,
         )
 
 
@@ -202,17 +202,6 @@ class AppConfig(_Base):
             self.secrets.linkedin_access_token.get_secret_value(),
             self.secrets.linkedin_person_urn,
         )
-
-    # -- convenience --------------------------------------------------------
-    @property
-    def effective_cookies_path(self) -> Path:
-        """Cookies path with the ``TWITTER_COOKIES_PATH`` override applied."""
-        return self.secrets.twitter_cookies_path or self.twitter.cookies_path
-
-    @property
-    def effective_db_path(self) -> Path:
-        """Database path with the ``SIDEKICK_DB_PATH`` override applied."""
-        return self.secrets.db_path_override or self.storage.db_path
 
 
 def _read_yaml(path: Path) -> dict[str, Any]:
@@ -271,11 +260,12 @@ def load_config(
 
     raw = dict(raw)
     raw["secrets"] = Secrets.from_env(env)
-    raw.setdefault("twitter", {})
-    if "twitter" in raw and isinstance(raw["twitter"], dict):
-        cookies_override = raw["secrets"].twitter_cookies_path
-        if cookies_override is not None:
-            raw["twitter"]["cookies_path"] = cookies_override
+
+    context_dir_override = resolved_source.get("CONTEXT_DIR")
+    if context_dir_override and context_dir_override.strip():
+        agent_dict = dict(raw.get("agent") or {})
+        agent_dict["context_dir"] = Path(context_dir_override.strip())
+        raw["agent"] = agent_dict
 
     try:
         return AppConfig.model_validate(raw)

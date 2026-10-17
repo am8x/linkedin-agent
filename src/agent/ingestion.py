@@ -20,6 +20,7 @@ from google.adk.agents.invocation_context import InvocationContext
 from google.adk.events import Event, EventActions
 
 from src.agent.state import (
+    KEY_CANDIDATE_TWEETS,
     KEY_ELIGIBLE_TWEETS,
     KEY_ERROR,
     KEY_EXECUTION_STATUS,
@@ -85,6 +86,7 @@ class TweetIngestionAgent(BaseAgent):
             message = "No monitored accounts configured; nothing to ingest."
             logger.error(message)
             return {
+                KEY_CANDIDATE_TWEETS: [],
                 KEY_ELIGIBLE_TWEETS: [],
                 KEY_SELECTED_TWEET: None,
                 KEY_ERROR: message,
@@ -98,6 +100,7 @@ class TweetIngestionAgent(BaseAgent):
             message = f"Timeline ingestion failed: {type(exc).__name__}: {exc}"
             logger.exception(message)
             return {
+                KEY_CANDIDATE_TWEETS: [],
                 KEY_ELIGIBLE_TWEETS: [],
                 KEY_SELECTED_TWEET: None,
                 KEY_ERROR: message,
@@ -114,6 +117,7 @@ class TweetIngestionAgent(BaseAgent):
                 )
                 logger.error(message)
                 return {
+                    KEY_CANDIDATE_TWEETS: [],
                     KEY_ELIGIBLE_TWEETS: [],
                     KEY_SELECTED_TWEET: None,
                     KEY_ERROR: message,
@@ -121,6 +125,7 @@ class TweetIngestionAgent(BaseAgent):
                 }
             logger.info("No new unposted tweets found in the %dh window.", lookback)
             return {
+                KEY_CANDIDATE_TWEETS: [],
                 KEY_ELIGIBLE_TWEETS: [],
                 KEY_SELECTED_TWEET: None,
                 KEY_ERROR: None,
@@ -129,14 +134,15 @@ class TweetIngestionAgent(BaseAgent):
 
         selected = candidates[0]
         logger.info(
-            "Selected tweet %s by @%s (%.2fh old, %d unposted candidate(s))",
+            "Ingested %d unposted candidate tweet(s) across monitored accounts (newest: %s by @%s).",
+            len(candidates),
             selected.tweet_id,
             selected.author_handle,
-            selected.age_hours,
-            len(candidates),
         )
+        candidate_dicts = [to_state_dict(tweet) for tweet in candidates]
         return {
-            KEY_ELIGIBLE_TWEETS: [to_state_dict(tweet) for tweet in candidates],
+            KEY_CANDIDATE_TWEETS: candidate_dicts,
+            KEY_ELIGIBLE_TWEETS: candidate_dicts,
             KEY_SELECTED_TWEET: to_state_dict(selected),
             KEY_ERROR: None,
             KEY_EXECUTION_STATUS: STATUS_INGESTED,
@@ -195,7 +201,7 @@ def create_ingestion_agent(
         cookies_path=(
             None
             if fetcher is not None
-            else getattr(config, "effective_cookies_path", None)
+            else getattr(twitter_config, "cookies_path", None)
         ),
         client_factory=client_factory or build_client,
         lookback_hours=lookback,

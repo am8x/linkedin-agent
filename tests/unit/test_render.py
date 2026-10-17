@@ -65,6 +65,13 @@ class TestStyling:
         for selector in CHROME_SELECTORS:
             assert selector in css
 
+    def test_page_chrome_styles_never_hide_the_card_ancestor(self) -> None:
+        # X nests the tweet article inside `[data-testid="primaryColumn"]`'s
+        # first child; hiding that node hid the card itself and broke capture.
+        offending = '[data-testid="primaryColumn"] > div:first-child'
+        assert offending not in CHROME_SELECTORS
+        assert offending not in build_card_css()
+
     def test_injection_script_hides_metrics_on_the_live_dom(self) -> None:
         script = build_injection_script()
         assert "METRIC_SELECTORS" in script
@@ -262,6 +269,22 @@ class TestTweetCardRenderer:
         await renderer.capture("https://x.com/sama/status/123", "123")
         assert fake_page.settle_ms > 0
 
+    async def test_waits_for_the_card_before_injecting_styles(
+        self,
+        fake_page: FakePage,
+        tmp_path: Path,
+    ) -> None:
+        # Styling first would make the visibility wait unwinnable whenever the
+        # stylesheet touches an ancestor of the card.
+        renderer = TweetCardRenderer(
+            ScreenshotConfig(output_dir=tmp_path), page=fake_page
+        )
+        await renderer.capture("https://x.com/sama/status/123", "123")
+
+        events = fake_page.events
+        assert events.index("wait_for_card") < events.index("style")
+        assert events.index("style") < events.index("settle")
+
     async def test_creates_the_output_directory(self, tmp_path: Path) -> None:
         nested = tmp_path / "deep" / "cards"
         renderer = TweetCardRenderer(
@@ -316,3 +339,38 @@ class TestTweetCardRenderer:
         )
         asset = await capture_card("https://x.com/sama/status/1", "1")
         assert asset.file_path.exists()
+
+
+# ---------------------------------------------------------------------------
+# Session replay — X gates tweet permalinks behind a login wall
+# ---------------------------------------------------------------------------
+class _RecordingContext:
+    """Captures the cookies Playwright would install into a browser context."""
+
+    def __init__(self) -> None:
+        self.added: list[dict[str, str]] = []
+
+    async def add_cookies(self, cookies: list[dict[str, str]]) -> None:
+        self.added.extend(cookies)
+
+
+class TestCaptureAuthentication:
+    async def test_replays_the_twitter_session_into_the_browser(self) -> None:
+        renderer = TweetCardRenderer(
+            ScreenshotConfig(),
+            cookies={"auth_token": "session", "ct0": "csrf"},
+        )
+        context = _RecordingContext()
+
+        await renderer._authenticate(context)
+
+        assert {cookie["name"] for cookie in context.added} == {"auth_token", "ct0"}
+        assert {cookie["domain"] for cookie in context.added} == {".x.com"}
+        assert {cookie["path"] for cookie in context.added} == {"/"}
+
+    async def test_leaves_the_context_anonymous_without_a_session(self) -> None:
+        context = _RecordingContext()
+
+        await TweetCardRenderer(ScreenshotConfig())._authenticate(context)
+
+        assert context.added == []

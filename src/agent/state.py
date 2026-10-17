@@ -15,15 +15,19 @@ from pydantic import BaseModel
 ExecutionStatus = Literal[
     "SUCCESS",
     "NO_NEW_TWEETS",
+    "NO_QUALIFIED_CANDIDATE",
     "DRY_RUN",
     "SKIPPED",
+    "USER_CANCELLED",
     "FAILED",
 ]
 
 STATUS_SUCCESS: ExecutionStatus = "SUCCESS"
 STATUS_NO_NEW_TWEETS: ExecutionStatus = "NO_NEW_TWEETS"
+STATUS_NO_QUALIFIED_CANDIDATE: ExecutionStatus = "NO_QUALIFIED_CANDIDATE"
 STATUS_DRY_RUN: ExecutionStatus = "DRY_RUN"
 STATUS_SKIPPED: ExecutionStatus = "SKIPPED"
+STATUS_USER_CANCELLED: ExecutionStatus = "USER_CANCELLED"
 STATUS_FAILED: ExecutionStatus = "FAILED"
 
 # State keys ---------------------------------------------------------------
@@ -31,8 +35,12 @@ KEY_MONITORED_ACCOUNTS = "monitored_accounts"
 KEY_LOOKBACK_HOURS = "lookback_hours"
 KEY_DRY_RUN = "dry_run"
 KEY_AUTO_PUBLISH = "auto_publish"
+KEY_CANDIDATE_TWEETS = "candidate_tweets"
 KEY_ELIGIBLE_TWEETS = "eligible_tweets"
 KEY_SELECTED_TWEET = "selected_tweet"
+KEY_CURATOR_DECISION = "curator_decision"
+KEY_CURATION_RATIONALE = "curation_rationale"
+KEY_RUNNER_UP_TWEETS = "runner_up_tweets"
 KEY_RENDERED_ASSET = "rendered_asset"
 KEY_COMMENTARY = "commentary"
 KEY_PUBLICATION_RECORD = "publication_record"
@@ -46,8 +54,12 @@ PipelineSessionStateKeys: tuple[str, ...] = (
     "lookback_hours",
     "dry_run",
     "auto_publish",
+    "candidate_tweets",
     "eligible_tweets",
     "selected_tweet",
+    "curator_decision",
+    "curation_rationale",
+    "runner_up_tweets",
     "rendered_asset",
     "commentary",
     "publication_record",
@@ -72,8 +84,14 @@ class PipelineSessionState(TypedDict, total=False):
     auto_publish: bool
 
     # Stage 1: ingestion & filtering output
+    candidate_tweets: list[dict[str, Any]]
     eligible_tweets: list[dict[str, Any]]
     selected_tweet: dict[str, Any] | None
+
+    # Stage 1.5: curation output
+    curator_decision: dict[str, Any] | None
+    curation_rationale: str
+    runner_up_tweets: list[dict[str, Any]]
 
     # Stage 2: visual card rendering output
     rendered_asset: dict[str, Any] | None
@@ -100,8 +118,12 @@ def new_session_state(
         lookback_hours=lookback_hours,
         dry_run=dry_run,
         auto_publish=auto_publish,
+        candidate_tweets=[],
         eligible_tweets=[],
         selected_tweet=None,
+        curator_decision=None,
+        curation_rationale="",
+        runner_up_tweets=[],
         rendered_asset=None,
         commentary=None,
         publication_record=None,
@@ -142,7 +164,10 @@ class PipelineError(RuntimeError):
 __all__ = [
     "ExecutionStatus",
     "KEY_AUTO_PUBLISH",
+    "KEY_CANDIDATE_TWEETS",
     "KEY_COMMENTARY",
+    "KEY_CURATION_RATIONALE",
+    "KEY_CURATOR_DECISION",
     "KEY_DRY_RUN",
     "KEY_ELIGIBLE_TWEETS",
     "KEY_ERROR",
@@ -151,6 +176,7 @@ __all__ = [
     "KEY_MONITORED_ACCOUNTS",
     "KEY_PUBLICATION_RECORD",
     "KEY_RENDERED_ASSET",
+    "KEY_RUNNER_UP_TWEETS",
     "KEY_SELECTED_TWEET",
     "PipelineError",
     "PipelineSessionState",
@@ -158,8 +184,10 @@ __all__ = [
     "STATUS_DRY_RUN",
     "STATUS_FAILED",
     "STATUS_NO_NEW_TWEETS",
+    "STATUS_NO_QUALIFIED_CANDIDATE",
     "STATUS_SKIPPED",
     "STATUS_SUCCESS",
+    "STATUS_USER_CANCELLED",
     "new_session_state",
     "to_state_dict",
     "utc_now_iso",

@@ -21,6 +21,7 @@ from pathlib import Path
 from typing import Any
 
 from src.logging import get_logger
+from src.twitter.compat import patch_twikit_user_model
 
 logger = get_logger(__name__)
 
@@ -145,10 +146,12 @@ def load_cookies(cookies_path: str | Path) -> dict[str, str]:
 # twikit client construction
 # ---------------------------------------------------------------------------
 def _import_client() -> Any:
-    """Import `twikit` lazily.
+    """Import `twikit` lazily and neutralise its known schema gaps.
 
     Importing `twikit` mutates the asyncio event-loop policy on Windows, so it
     must not happen at module import time (that would fight pytest-asyncio).
+    The `User` model is patched immediately so no timeline sweep can trip over
+    a field X chose not to send.
     """
     try:
         from twikit import Client
@@ -157,6 +160,7 @@ def _import_client() -> Any:
             "The 'twikit' package is required for Twitter ingestion. Install "
             "dependencies with 'pip install -r requirements.txt'."
         ) from exc
+    patch_twikit_user_model()
     return Client
 
 

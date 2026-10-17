@@ -115,3 +115,21 @@ pytest
 ruff check .
 mypy src
 ```
+
+---
+
+## ⚠️ Live-Run Failure Playbook
+
+The automated suite fakes every network boundary, so it cannot catch integration
+drift on the live services. When a real run misbehaves, check here first:
+
+| Console symptom | Cause | Fix |
+|---|---|---|
+| `Couldn't get KEY_BYTE indices` | `twikit` ≥ 2.3 needs an `ondemand.s` chunk X no longer serves | `pip install -r requirements.txt` (pin is `twikit==2.1.2`) |
+| `Could not find a tweet card … or behind a login wall` | The capture browser had no session, or `cookies.json` expired | Re-export `auth_token` + `ct0`; the runner replays them automatically |
+| `NotImplementedError` spawning Chromium | Selector event loop (importing `twikit` rewrites the Windows policy) | Already handled in `src/runner.py::main` |
+| `429 RESOURCE_EXHAUSTED` | Gemini key quota exhausted | Raise the plan, or retry with `--no-grounding` |
+
+> Before a **first** live run, delete any stale `state/sidekick.db` rows only if
+> you intend to re-review earlier tweets; `DRY_RUN` and `FAILED` rows never block
+> a later run.

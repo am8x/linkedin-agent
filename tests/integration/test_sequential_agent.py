@@ -72,6 +72,7 @@ class TestPipelineAssembly:
         pipeline = build_pipeline(config, components=pipeline_components)
         assert describe_pipeline(pipeline) == [
             "tweet_ingestion_agent",
+            "tweet_curator_agent",
             "card_capture_agent",
             "commentary_agent",
             "linkedin_publisher_agent",

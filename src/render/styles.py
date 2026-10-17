@@ -36,11 +36,12 @@ METRIC_SELECTORS: tuple[str, ...] = (
 )
 
 # Surrounding page furniture removed from the full-page screenshot fallback.
+# X nests the tweet article inside `[data-testid="primaryColumn"]`'s first child,
+# so that node must never be hidden here — it would hide the card itself.
 CHROME_SELECTORS: tuple[str, ...] = (
     'header[role="banner"]',
     '[data-testid="sidebarColumn"]',
     '[data-testid="BottomBar"]',
-    '[data-testid="primaryColumn"] > div:first-child',
     '[data-testid="DMDrawer"]',
     'nav[aria-label="Primary"]',
 )

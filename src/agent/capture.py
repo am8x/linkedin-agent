@@ -29,6 +29,7 @@ from src.render.screenshot import (
     TweetCardRenderer,
     build_screenshot_config,
 )
+from src.twitter.auth import load_cookies
 
 logger = get_logger(__name__)
 
@@ -43,6 +44,9 @@ class CardCaptureAgent(BaseAgent):
 
     screenshot_config: Any = None
     """``src.render.screenshot.ScreenshotConfig`` used by the default factory."""
+
+    cookies_path: Any = None
+    """Path to ``cookies.json`` replayed into the capture browser session."""
 
     async def _run_async_impl(
         self,
@@ -72,8 +76,8 @@ class CardCaptureAgent(BaseAgent):
             logger.error(message)
             return {KEY_ERROR: message, KEY_EXECUTION_STATUS: STATUS_FAILED}
 
-        renderer = self._resolve_renderer()
         try:
+            renderer = self._resolve_renderer()
             async with renderer as active:
                 asset = await active.capture(permalink, tweet_id)
         except CaptureError as exc:
@@ -97,7 +101,13 @@ class CardCaptureAgent(BaseAgent):
         config = self.screenshot_config
         if config is not None and not isinstance(config, ScreenshotConfig):
             config = build_screenshot_config(config)
-        return TweetCardRenderer(config)
+        return TweetCardRenderer(config, cookies=self._session_cookies())
+
+    def _session_cookies(self) -> dict[str, str] | None:
+        """Load the Twitter session so X serves the card instead of a login wall."""
+        if self.cookies_path is None:
+            return None
+        return load_cookies(self.cookies_path)
 
 
 def create_capture_agent(
@@ -112,6 +122,7 @@ def create_capture_agent(
         description="Renders the selected tweet into a dark-mode PNG card.",
         renderer_factory=renderer_factory,
         screenshot_config=build_screenshot_config(getattr(config, "render", None)),
+        cookies_path=getattr(getattr(config, "twitter", None), "cookies_path", None),
     )
 
 

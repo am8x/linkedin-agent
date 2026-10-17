@@ -13,7 +13,7 @@ license = { text = "MIT" }
 dependencies = [
     "google-adk>=2.0,<3",
     "google-genai>=2.0,<3",
-    "twikit>=2.1,<3",
+    "twikit==2.1.2",
     "playwright>=1.40",
     "httpx>=0.27",
     "pydantic>=2.7,<3",
@@ -78,6 +78,7 @@ select = [
     "SIM", # flake8-simplify
 ]
 ignore = [
+    "E501",   # line-length is managed by ruff format
     "SIM108", # ternary operator reads worse for the branchy runner logic
 ]
 

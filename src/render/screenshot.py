@@ -12,6 +12,7 @@ code path.
 from __future__ import annotations
 
 import struct
+from collections.abc import Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Literal
@@ -34,6 +35,10 @@ PNG_MIME_TYPE = "image/png"
 PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
 DEVICE_SCALE_FACTOR = 2
 DEFAULT_OUTPUT_DIR = Path(".assets/screenshots")
+
+# X gates tweet permalinks behind a login wall, so the capture browser must
+# replay the ingested session cookies for a card to render at all.
+X_COOKIE_DOMAIN = ".x.com"
 
 # Time allowed for fonts, avatars, and embedded media to settle before capture.
 SETTLE_MILLISECONDS = 800
@@ -182,9 +187,11 @@ class TweetCardRenderer:
         config: ScreenshotConfig | None = None,
         *,
         page: Any | None = None,
+        cookies: Mapping[str, str] | None = None,
     ) -> None:
         self.config = config or ScreenshotConfig()
         self._injected_page = page
+        self._cookies: dict[str, str] = dict(cookies or {})
         self._playwright: Any | None = None
         self._browser: Any | None = None
         self._context: Any | None = None
@@ -215,6 +222,7 @@ class TweetCardRenderer:
                 color_scheme=self.config.theme,
                 device_scale_factor=self.config.device_scale_factor,
             )
+            await self._authenticate(self._context)
             self._page = await self._context.new_page()
         except CaptureError:
             raise
@@ -248,6 +256,17 @@ class TweetCardRenderer:
         self._browser = None
         self._playwright = None
         self._started = self._injected_page is not None
+
+    async def _authenticate(self, context: Any) -> None:
+        """Replay the Twitter session so X renders the permalink, not a login wall."""
+        if not self._cookies:
+            return
+        await context.add_cookies(
+            [
+                {"name": name, "value": value, "domain": X_COOKIE_DOMAIN, "path": "/"}
+                for name, value in self._cookies.items()
+            ]
+        )
 
     async def __aenter__(self) -> TweetCardRenderer:
         await self.start()
@@ -289,8 +308,10 @@ class TweetCardRenderer:
                 f"Could not load tweet permalink {permalink}: {exc}"
             ) from exc
 
-        await self._apply_styling(page)
+        # Wait for the card *before* injecting CSS: styling a hidden or
+        # half-hydrated tree would make the visibility wait unwinnable.
         await self._wait_for_card(page, permalink)
+        await self._apply_styling(page)
         await self._settle(page)
 
         try:

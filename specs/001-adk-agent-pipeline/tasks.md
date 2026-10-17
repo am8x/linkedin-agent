@@ -12,7 +12,7 @@
 - [X] T001 Initialize Python environment dependencies in `requirements.txt` with `google-adk`, `google-genai`, `twikit`, `playwright`, `httpx`, `pydantic`, `pyyaml`, `python-dotenv`, and `rich`
 - [X] T002 [P] Configure project packaging and development toolchains in `pyproject.toml` with Ruff, mypy, and Pytest settings
 - [X] T003 [P] Create application package directory structure per plan in `src/agent/`, `src/twitter/`, `src/render/`, `src/linkedin/`, `src/storage/`, `tests/unit/`, and `tests/integration/` with `__init__.py` files
-- [X] T004 [P] Create environment template in `.env.example` specifying `GOOGLE_API_KEY`, `LINKEDIN_ACCESS_TOKEN`, `LINKEDIN_PERSON_URN`, `TWITTER_COOKIES_PATH`, and `SIDEKICK_DB_PATH`
+- [X] T004 [P] Create environment template in `.env.example` specifying `GOOGLE_API_KEY`, `LINKEDIN_ACCESS_TOKEN`, `LINKEDIN_PERSON_URN`, and `CONFIG_PATH`. Deviation (2026-10-18): the `TWITTER_COOKIES_PATH` and `SIDEKICK_DB_PATH` overrides were dropped so that `twitter.cookies_path` and `storage.db_path` are configured only in `config.yaml`, eliminating a second source of truth for each path.
 - [X] T005 [P] Create default application configuration in `config.yaml` specifying monitored accounts (`sama`, `karpathy`, `ylecun`), 12h lookback window, dark theme, metric suppression, and Gemini agent parameters
 
 ---
@@ -117,8 +117,23 @@
 - [X] T036 [P] Implement unit tests for Twitter ingestion, Playwright card capture, commentary generation, LinkedIn client, and SQLite ledger in `tests/unit/test_twitter.py`, `tests/unit/test_render.py`, `tests/unit/test_commentary.py`, `tests/unit/test_linkedin.py`, and `tests/unit/test_storage.py`
 - [X] T037 [P] Implement end-to-end integration test for ADK `SequentialAgent` workflow in `tests/integration/test_sequential_agent.py`
 - [X] T038 Execute code formatting and type checking with `ruff check .`, `ruff format .`, and `mypy src`
-- [X] T039 Execute end-to-end validation against `specs/001-adk-agent-pipeline/quickstart.md` validating dry-run, interactive confirmation, and scheduled execution
+- [X] T039 Execute end-to-end validation against `specs/001-adk-agent-pipeline/quickstart.md` validating dry-run, interactive confirmation, and scheduled execution. Note (2026-10-18): executed with faked network boundaries only; the defects that a live run surfaced are recorded in Phase 8.
 - [X] T040 [P] Update project `README.md` with Google ADK sequential agent architecture, configuration instructions, and runner usage guides
+
+**Checkpoint**: Phase 7 was validated against the quickstart with faked network boundaries. The first *live* run exposed four integration defects that no fake could catch; they are fixed in Phase 8.
+
+---
+
+## Phase 8: Live Dry-Run Remediation (post-implementation)
+
+**Purpose**: Make a real run against X, Chromium, and Gemini succeed. Every task below was found by executing `python -m src.runner --single-run --dry-run` against live services.
+
+- [X] T041 Pin `twikit==2.1.2` in `requirements.txt` and `pyproject.toml`. Deviation (2026-10-18): `twikit>=2.3` bootstraps an `x-client-transaction-id` token by scraping X's `ondemand.s` webpack chunk, and X removed that reference, so every request raised `Couldn't get KEY_BYTE indices` (upstream `d60/twikit#408`). `2.1.2` predates the bootstrap and matches the version already recorded in `research.md` (`^2.1.2`).
+- [X] T042 Add `src/twitter/compat.py` with two idempotent shims: backfill the `twikit.user.User` fields X no longer sends (`entities.description.urls`, `pinned_tweet_ids_str`, `withheld_in_countries`), and restore the Windows **proactor** event-loop policy that importing `twikit` overwrites (Playwright cannot spawn Chromium on a selector loop). Wire the model patch into `src/twitter/auth.py::_import_client` and the policy restore into `src/runner.py::main` before the loop is created.
+- [X] T043 Replay the authenticated Twitter session into the capture browser. `TweetCardRenderer` now accepts `cookies` and installs them for `.x.com` in `start()`; `CardCaptureAgent` loads them from `config.twitter.cookies_path`. X gates tweet permalinks behind a login wall, so an anonymous context found no card.
+- [X] T044 Fix card styling so the visibility wait can succeed: drop `[data-testid="primaryColumn"] > div:first-child` from `CHROME_SELECTORS` (X nests the tweet inside that node, so hiding it hid the card) and inject styling *after* the card is visible.
+- [X] T045 [P] Add regression tests: `tests/unit/test_compat.py`, capture-authentication and style-ordering cases in `tests/unit/test_render.py`, and the capture-agent cookie path in `tests/unit/test_config.py`.
+- [ ] T046 Implement the constitution's HTTP 429 grounding fallback in `src/agent/commentary.py` so grounded synthesis degrades to direct synthesis instead of aborting the run. Still unimplemented; an exhausted Gemini quota currently fails the whole pipeline.
 
 ---
 

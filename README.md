@@ -70,6 +70,11 @@ Prerequisites: **Python 3.11+**, exported Twitter/X session cookies
 (`cookies.json`), a **Gemini API key**, and LinkedIn developer credentials
 (`w_member_social` scope).
 
+The same `cookies.json` session authenticates *both* halves of Twitter access:
+timeline ingestion and the headless capture browser. X serves tweet permalinks
+only to a signed-in session, so the capture browser replays these cookies before
+loading the card.
+
 ## Configuration
 
 Behavioural settings live in `config.yaml`; secrets come from the environment
@@ -95,9 +100,7 @@ Behavioural settings live in `config.yaml`; secrets come from the environment
 | `GOOGLE_API_KEY` (or `GEMINI_API_KEY`) | Gemini access for commentary synthesis |
 | `LINKEDIN_ACCESS_TOKEN` | OAuth 2.0 token with `w_member_social` |
 | `LINKEDIN_PERSON_URN` | LinkedIn member id used as post author |
-| `TWITTER_COOKIES_PATH` | Override the cookies file location |
-| `SIDEKICK_DB_PATH` | Override the ledger database path |
-| `CONFIG_PATH` | Default YAML config path |
+| `CONFIG_PATH` | Which YAML config file to load (all path settings live inside it) |
 
 ## Usage
 
@@ -153,6 +156,16 @@ only treated as *posted* when its row has `status = 'PUBLISHED'`; `DRY_RUN`,
 Ingestion filters already-published ids in a single query, and the publisher's
 atomic `claim()` handshake (a `UNIQUE` index on `tweet_id`) is the final guard
 against duplicate cross-posts.
+
+## Troubleshooting
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| `Couldn't get KEY_BYTE indices` | `twikit` ≥ 2.3 bootstraps a client-transaction token from an `ondemand.s` chunk X no longer ships | Reinstall from `requirements.txt` — the pin holds `twikit==2.1.2` |
+| Card capture fails with *“…or behind a login wall”* | `cookies.json` is missing, stale, or expired | Re-export `auth_token` and `ct0` from a signed-in browser session |
+| `NotImplementedError` when launching Chromium | A selector event loop is running (importing `twikit` rewrites the policy) | Handled automatically in `src/runner.py`; only bites code that imports `twikit` before `asyncio.run` |
+| `429 RESOURCE_EXHAUSTED` from Gemini | API-key quota/plan exhausted (grounded requests are heavier) | Raise the quota, or run with `--no-grounding` |
+| `No new unposted tweets found` | Correct behaviour: no authored tweet inside the recency window | Widen `twitter.lookback_hours`, or monitor a more active account |
 
 ## Development
 

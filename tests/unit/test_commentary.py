@@ -49,13 +49,13 @@ class TestCommentaryEntity:
         with pytest.raises(ValidationError):
             Commentary(text="too short")
 
-    def test_rejects_text_longer_than_six_hundred_characters(self) -> None:
+    def test_rejects_text_longer_than_twelve_hundred_characters(self) -> None:
         with pytest.raises(ValidationError):
-            Commentary(text="x" * 601)
+            Commentary(text="x" * 1201)
 
     def test_accepts_the_boundary_lengths(self) -> None:
         assert Commentary(text="a" * 10).character_count == 10
-        assert Commentary(text="a" * 600).character_count == 600
+        assert Commentary(text="a" * 1200).character_count == 1200
 
     def test_sentence_count_helper(self) -> None:
         commentary = Commentary(text="One sentence here. And a second one.")

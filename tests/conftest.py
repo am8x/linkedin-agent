@@ -73,6 +73,7 @@ class FakeLocator:
         return self
 
     async def wait_for(self, **kwargs: Any) -> None:
+        self.page.events.append("wait_for_card")
         if self.page.fail_wait:
             raise RuntimeError("fake: card never became visible")
         return None
@@ -95,17 +96,21 @@ class FakePage:
         self.fail_wait = False
         self.fail_goto = False
         self.settle_ms = 0
+        self.events: list[str] = []
 
     async def goto(self, url: str, **kwargs: Any) -> None:
         if self.fail_goto:
             raise RuntimeError("fake: navigation failed")
         self.visited.append(url)
+        self.events.append("goto")
 
     async def add_style_tag(self, content: str = "", **kwargs: Any) -> None:
         self.styles.append(content)
+        self.events.append("style")
 
     async def evaluate(self, script: str, *args: Any, **kwargs: Any) -> int:
         self.scripts.append(script)
+        self.events.append("script")
         return 1
 
     def locator(self, selector: str) -> FakeLocator:
@@ -113,6 +118,7 @@ class FakePage:
 
     async def wait_for_timeout(self, milliseconds: int) -> None:
         self.settle_ms += milliseconds
+        self.events.append("settle")
 
 
 # ---------------------------------------------------------------------------
@@ -122,7 +128,11 @@ class FakeLlm(BaseLlm):
     """ADK model double returning a canned completion."""
 
     model: str = "fake-gemini"
-    reply: str = "Tweets are fun, but shipping is better."
+    reply: str = (
+        "Reliability is an engineering discipline.\n\n"
+        "Our automated remediation ladder cut incident recovery from 60m to 5m in production.\n\n"
+        "Deterministic recovery beats complex prompt engineering."
+    )
     grounding: bool = False
     calls: int = 0
 
@@ -275,6 +285,37 @@ def linkedin_client() -> FakeLinkedInClient:
     return FakeLinkedInClient()
 
 
+async def _default_fake_curator(
+    candidates: list[dict[str, Any]], prompt: str = ""
+) -> Any:
+    from src.agent.curator import CandidateEvaluation, CuratorDecision
+
+    if not candidates:
+        return CuratorDecision(
+            status="NO_QUALIFIED_CANDIDATE",
+            selected_tweet_id=None,
+            selection_rationale="No candidate tweets provided.",
+            ranked_runner_up_ids=[],
+            candidate_evaluations=[],
+        )
+    winner = candidates[0]
+    return CuratorDecision(
+        status="SELECTED",
+        selected_tweet_id=str(winner.get("tweet_id")),
+        selection_rationale="Top engineering signal candidate.",
+        ranked_runner_up_ids=[str(c.get("tweet_id")) for c in candidates[1:]],
+        candidate_evaluations=[
+            CandidateEvaluation(
+                tweet_id=str(c.get("tweet_id")),
+                author_handle=str(c.get("author_handle")),
+                relevance_score=9,
+                evaluation_notes="Relevant tweet",
+            )
+            for c in candidates
+        ],
+    )
+
+
 @pytest.fixture()
 def pipeline_components(
     config: AppConfig,
@@ -289,6 +330,7 @@ def pipeline_components(
     return PipelineComponents(
         ledger=ledger,
         fetcher=FakeFetcher([fresh_tweet]),
+        curator_evaluator=_default_fake_curator,
         renderer_factory=renderer_factory,
         llm_model=FakeLlm(),
         linkedin_client=linkedin_client,

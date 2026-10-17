@@ -9,8 +9,12 @@ google-adk>=2.0,<3
 # Google Gemini API client (commentary synthesis + Google Search grounding)
 google-genai>=2.0,<3
 
-# Cookie-authenticated Twitter/X timeline ingestion (zero API fees)
-twikit>=2.1,<3
+# Cookie-authenticated Twitter/X timeline ingestion (zero API fees).
+# Pinned deliberately: twikit >=2.3 bootstraps a client-transaction token that
+# X's current web bundle no longer exposes ("Couldn't get KEY_BYTE indices"),
+# which makes every request fail.  2.1.2 predates that bootstrap and is the
+# version validated by the sibling sidekick projects.
+twikit==2.1.2
 
 # Headless Chromium automation for dark-mode tweet card capture
 playwright>=1.40
