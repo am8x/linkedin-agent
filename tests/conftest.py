@@ -1,0 +1,297 @@
+"""Shared pytest fixtures: deterministic doubles for every network boundary.
+
+Nothing in the test-suite touches Twitter, Chromium, Gemini, or LinkedIn.  Each
+boundary has a small, purpose-built double so the production wiring can be
+exercised as-is.
+"""
+
+from __future__ import annotations
+
+import struct
+import zlib
+from collections.abc import Iterator
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
+from typing import Any
+
+import pytest
+from google.adk.models.base_llm import BaseLlm
+from google.adk.models.llm_response import LlmResponse
+from google.genai import types
+
+from src.agent.pipeline import PipelineComponents
+from src.config import AgentConfig, AppConfig, RenderConfig, Secrets, TwitterConfig
+from src.linkedin.models import LinkedInPostResult
+from src.storage.ledger import PublicationLedger
+from src.twitter.fetcher import FetchResult
+from src.twitter.models import SourceTweet
+
+# ---------------------------------------------------------------------------
+# PNG helpers
+# ---------------------------------------------------------------------------
+
+
+def make_png_bytes(width: int = 700, height: int = 320) -> bytes:
+    """Return a minimal but structurally valid PNG image."""
+
+    def chunk(kind: bytes, data: bytes) -> bytes:
+        return (
+            struct.pack(">I", len(data))
+            + kind
+            + data
+            + struct.pack(">I", zlib.crc32(kind + data) & 0xFFFFFFFF)
+        )
+
+    ihdr = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
+    raw = b"".join(b"\x00" + b"\x00\x00\x00" * width for _ in range(height))
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + chunk(b"IHDR", ihdr)
+        + chunk(b"IDAT", zlib.compress(raw))
+        + chunk(b"IEND", b"")
+    )
+
+
+def write_png(path: Path, width: int = 700, height: int = 320) -> Path:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(make_png_bytes(width, height))
+    return path
+
+
+# ---------------------------------------------------------------------------
+# Fake Playwright surface
+# ---------------------------------------------------------------------------
+class FakeLocator:
+    """Minimal Playwright locator that writes a real PNG on ``screenshot``."""
+
+    def __init__(self, selector: str, page: FakePage) -> None:
+        self.selector = selector
+        self.page = page
+
+    @property
+    def first(self) -> FakeLocator:
+        return self
+
+    async def wait_for(self, **kwargs: Any) -> None:
+        if self.page.fail_wait:
+            raise RuntimeError("fake: card never became visible")
+        return None
+
+    async def screenshot(self, path: str | None = None, **kwargs: Any) -> bytes:
+        assert path is not None, "screenshot needs a destination path"
+        write_png(Path(path), self.page.width, self.page.height)
+        return b""
+
+
+class FakePage:
+    """Just enough of the Playwright ``Page`` API for capture tests."""
+
+    def __init__(self, *, width: int = 700, height: int = 320) -> None:
+        self.width = width
+        self.height = height
+        self.visited: list[str] = []
+        self.styles: list[str] = []
+        self.scripts: list[str] = []
+        self.fail_wait = False
+        self.fail_goto = False
+        self.settle_ms = 0
+
+    async def goto(self, url: str, **kwargs: Any) -> None:
+        if self.fail_goto:
+            raise RuntimeError("fake: navigation failed")
+        self.visited.append(url)
+
+    async def add_style_tag(self, content: str = "", **kwargs: Any) -> None:
+        self.styles.append(content)
+
+    async def evaluate(self, script: str, *args: Any, **kwargs: Any) -> int:
+        self.scripts.append(script)
+        return 1
+
+    def locator(self, selector: str) -> FakeLocator:
+        return FakeLocator(selector, self)
+
+    async def wait_for_timeout(self, milliseconds: int) -> None:
+        self.settle_ms += milliseconds
+
+
+# ---------------------------------------------------------------------------
+# Fake Gemini model
+# ---------------------------------------------------------------------------
+class FakeLlm(BaseLlm):
+    """ADK model double returning a canned completion."""
+
+    model: str = "fake-gemini"
+    reply: str = "Tweets are fun, but shipping is better."
+    grounding: bool = False
+    calls: int = 0
+
+    async def generate_content_async(
+        self,
+        llm_request: Any,
+        stream: bool = False,
+    ) -> Any:
+        self.calls += 1
+        metadata = types.GroundingMetadata() if self.grounding else None
+        yield LlmResponse(
+            content=types.Content(
+                role="model",
+                parts=[types.Part(text=self.reply)],
+            ),
+            grounding_metadata=metadata,
+        )
+
+
+# ---------------------------------------------------------------------------
+# Fake Twitter + LinkedIn boundaries
+# ---------------------------------------------------------------------------
+class FakeFetcher:
+    """Timeline fetcher double returning a canned tweet list."""
+
+    def __init__(self, tweets: list[SourceTweet] | None = None) -> None:
+        self.tweets = tweets if tweets is not None else []
+        self.error: Exception | None = None
+        self.handles_seen: list[str] = []
+        self.lookback_hours: int = 12
+
+    async def fetch(self, handles: Any, **kwargs: Any) -> FetchResult:
+        self.handles_seen = list(handles)
+        if self.error is not None:
+            raise self.error
+        result = FetchResult()
+        for handle in self.handles_seen:
+            result.per_account[handle] = len(self.tweets)
+            result.skipped[handle] = 0
+        result.tweets.extend(self.tweets)
+        return result
+
+
+class FakeLinkedInClient:
+    """Records what would have been uploaded/posted to LinkedIn."""
+
+    def __init__(self, *, fail: Exception | None = None) -> None:
+        self.uploaded: list[str] = []
+        self.posted: list[str] = []
+        self.fail = fail
+        self.closed = False
+
+    async def aclose(self) -> None:
+        self.closed = True
+
+
+class FakePublisher:
+    """LinkedIn asset publisher double."""
+
+    post_urn = "urn:li:share:7000000000000000000"
+    asset_urn = "urn:li:digitalmediaAsset:C5000AQHabc123"
+
+    def __init__(self, client: FakeLinkedInClient) -> None:
+        self.client = client
+
+    async def publish(
+        self,
+        *,
+        commentary: str,
+        image_path: str | Path | None = None,
+        title: str | None = None,
+    ) -> LinkedInPostResult:
+        if self.client.fail is not None:
+            raise self.client.fail
+        if image_path is not None:
+            self.client.uploaded.append(str(image_path))
+        self.client.posted.append(commentary)
+        return LinkedInPostResult(
+            post_urn=self.post_urn,
+            asset_urn=self.asset_urn,
+            commentary=commentary,
+        )
+
+
+# ---------------------------------------------------------------------------
+# Fixtures
+# ---------------------------------------------------------------------------
+@pytest.fixture()
+def now() -> datetime:
+    return datetime(2026, 10, 17, 12, 0, tzinfo=UTC)
+
+
+@pytest.fixture()
+def fresh_tweet(now: datetime) -> SourceTweet:
+    return SourceTweet(
+        tweet_id="1800000000000000001",
+        author_handle="sama",
+        author_name="Sam Altman",
+        text="Shipping agents that ship.",
+        created_at=now - timedelta(minutes=30),
+        permalink="https://x.com/sama/status/1800000000000000001",
+    )
+
+
+@pytest.fixture()
+def config(tmp_path: Path) -> AppConfig:
+    return AppConfig(
+        twitter=TwitterConfig(
+            accounts=["sama", "karpathy"],
+            lookback_hours=12,
+            cookies_path=tmp_path / "cookies.json",
+        ),
+        render=RenderConfig(output_dir=tmp_path / "screenshots"),
+        agent=AgentConfig(model="fake-gemini", grounding=False),
+        secrets=Secrets(),
+    )
+
+
+@pytest.fixture()
+def ledger() -> Iterator[PublicationLedger]:
+    instance = PublicationLedger.open(":memory:")
+    try:
+        yield instance
+    finally:
+        instance.database.close()
+
+
+@pytest.fixture()
+def fake_page() -> FakePage:
+    return FakePage()
+
+
+@pytest.fixture()
+def renderer_factory(fake_page: FakePage, tmp_path: Path) -> Any:
+    from src.render.screenshot import ScreenshotConfig, TweetCardRenderer
+
+    output_dir = tmp_path / "screenshots"
+
+    def factory() -> TweetCardRenderer:
+        return TweetCardRenderer(
+            ScreenshotConfig(output_dir=output_dir),
+            page=fake_page,
+        )
+
+    return factory
+
+
+@pytest.fixture()
+def linkedin_client() -> FakeLinkedInClient:
+    return FakeLinkedInClient()
+
+
+@pytest.fixture()
+def pipeline_components(
+    config: AppConfig,
+    ledger: PublicationLedger,
+    fresh_tweet: SourceTweet,
+    renderer_factory: Any,
+    linkedin_client: FakeLinkedInClient,
+    tmp_path: Path,
+) -> PipelineComponents:
+    """Fully wired pipeline collaborators with every network boundary faked."""
+    config.render.output_dir = tmp_path / "screenshots"
+    return PipelineComponents(
+        ledger=ledger,
+        fetcher=FakeFetcher([fresh_tweet]),
+        renderer_factory=renderer_factory,
+        llm_model=FakeLlm(),
+        linkedin_client=linkedin_client,
+        publisher_factory=FakePublisher,
+        confirm_prompt=lambda preview: True,
+    )

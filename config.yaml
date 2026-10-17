@@ -1,0 +1,49 @@
+# ---------------------------------------------------------------------------
+# LinkedIn Sidekick - ADK  |  Default application configuration
+# ---------------------------------------------------------------------------
+
+# Target Twitter / X accounts to monitor
+twitter:
+  cookies_path: "cookies.json"
+  accounts:
+    - "sama"
+    - "karpathy"
+    - "ylecun"
+  lookback_hours: 12
+  exclude_replies: true
+  exclude_retweets: true
+  max_tweets_per_account: 40
+
+# Screenshot capture styling via Playwright
+render:
+  theme: "dark"              # Options: "dark" | "light"
+  hide_metrics: true         # Suppress view, retweet, like counters
+  viewport_width: 1200
+  viewport_height: 800
+  timeout_seconds: 15
+  output_dir: ".assets/screenshots"
+
+# Google ADK Generative AI Commentary Settings
+agent:
+  model: "gemini-3.8-flash"  # Gemini model identifier
+  max_sentences: 2
+  grounding: true            # Enable real-time Google Search grounding
+  prompt_template: |
+    You are a sharp, thoughtful industry observer on LinkedIn.
+    Write a 1-2 sentence concise, opinionated takeaway based on this tweet.
+    Be insightful, direct, and conversational.
+    Do NOT include hashtags, corporate buzzwords, quotes, or conversational filler.
+
+# Scheduler & Runner Settings
+scheduler:
+  default_interval_minutes: 60  # Periodic scheduling loop interval
+  auto_publish: false           # Default for manual runs (scheduled runs force true)
+
+# SQLite Persistence Path
+storage:
+  db_path: "state/sidekick.db"
+
+# Structured Logging
+logging:
+  level: "INFO"
+  log_file: "state/sidekick.log"
