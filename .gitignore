@@ -1,0 +1,59 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual Environments
+.venv/
+venv/
+ENV/
+env/
+
+# Environment, Secrets, and API Credentials
+.env
+*.env
+!.env.example
+cookies.json
+credentials.json
+token.json
+client_secret*.json
+*.pem
+*.key
+*.cert
+
+# Local Storage, SQLite Databases, and State
+state/*.db
+state/*.db-journal
+state/*.sqlite
+*.db
+*.sqlite3
+
+# Screenshots, Assets, and Media Outputs
+.assets/screenshots/*.png
+!.assets/screenshots/.gitkeep
+*.mp4
+*.webm
+
+# Testing, Coverage, and Linting Caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Universal / OS / IDE Files
+.DS_Store
+Thumbs.db
+*.tmp
+*.swp
+*.bak
+.vscode/
+.idea/
+
+# Agent Logs and Runtime Caches
+.system_generated/
+*.log
