@@ -76,4 +76,7 @@ class TestCommentaryInstructionFormatting:
         assert "Amit Kumar" in instruction
         assert "Directly discusses production recovery ladders." in instruction
         assert "Voice, Style Rules & Proof Bank" in instruction
-        assert "NO Emojis" in instruction or "0 emojis" in instruction
+        assert any(
+            phrase in instruction
+            for phrase in ("NO Emojis", "0 emojis", "`0` emojis", "Zero Emojis")
+        )

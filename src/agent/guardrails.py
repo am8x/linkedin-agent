@@ -90,6 +90,37 @@ class StyleGuardrail:
         self.min_paragraphs = min_paragraphs
         self.max_paragraphs = max_paragraphs
 
+    @classmethod
+    def from_markdown(
+        cls,
+        markdown_text: str | None,
+        *,
+        min_length: int = 20,
+        max_length: int = 1200,
+        min_paragraphs: int = 2,
+        max_paragraphs: int = 3,
+    ) -> StyleGuardrail:
+        """Dynamically extract banned words from markdown style guide content."""
+        words = list(BANNED_WORDS)
+        if markdown_text:
+            match = re.search(
+                r"(?i)##\s*\d*\.?\s*deterministic\s+banned\s+language.*?(?=\n##|\Z)",
+                markdown_text,
+                re.DOTALL,
+            )
+            section = match.group(0) if match else markdown_text
+            for token in re.findall(r"`([^`]+)`", section):
+                clean = token.strip().lower()
+                if clean and not clean.endswith(".md") and len(clean) > 1 and clean not in words:
+                    words.append(clean)
+        return cls(
+            banned_words=words,
+            min_length=min_length,
+            max_length=max_length,
+            min_paragraphs=min_paragraphs,
+            max_paragraphs=max_paragraphs,
+        )
+
     def validate(self, text: str) -> GuardrailResult:
         violations: list[GuardrailViolation] = []
         stripped = text.strip()

@@ -134,7 +134,12 @@ class FeedFetcher:
 
         # Sort newest first and apply rate limit
         candidates.sort(key=lambda item: item.published_at, reverse=True)
-        return candidates[: feed.max_items_per_poll]
+        limit = (
+            getattr(feed, "max_items_per_poll", None)
+            or getattr(feed, "max_items", None)
+            or 10
+        )
+        return candidates[:limit]
 
     def _parse_rss_items(
         self, root: ET.Element, feed: FeedConfig, cutoff: datetime

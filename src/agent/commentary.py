@@ -262,7 +262,8 @@ def build_prompt(
             f"Cite {pub_name} naturally in the text. "
             "CRITICAL CONSTRAINT: Do NOT include any outbound URLs, hyperlinks, or website addresses in the post body text. The source link will be provided in the first comment. "
             "Synthesize a structured micro-post following the 2-3 paragraph layout in the style guide. "
-            "Reply with the post body only. No preamble, zero quotes, zero hashtags, zero emojis, zero em dashes."
+            "Reply with the post body only. No preamble, zero quotes, zero hashtags, zero emojis, zero em dashes. "
+            "STRICT COMPLIANCE: Strictly adhere to all negative boundaries, banned language, and prohibited buzzwords defined in the style guide."
         )
     elif tweet:
         handle = tweet.get("author_handle", "unknown")
@@ -281,7 +282,8 @@ def build_prompt(
         if writer_prompt:
             sections.append(
                 "Synthesize a structured micro-post following the 2-3 paragraph layout in the style guide. "
-                "Reply with the post body only. No preamble, zero quotes, zero hashtags, zero emojis, zero em dashes."
+                "Reply with the post body only. No preamble, zero quotes, zero hashtags, zero emojis, zero em dashes. "
+                "STRICT COMPLIANCE: Strictly adhere to all negative boundaries, banned language, and prohibited buzzwords defined in the style guide."
             )
         else:
             sections.append(
@@ -478,6 +480,7 @@ def _populate_first_comment_if_article(state: Any) -> None:
 
 
 def _build_after_model_callback(
+    config: AgentConfig | None = None,
     model: Any | None = None,
     guardrail: StyleGuardrail | None = None,
 ) -> Callable[[CallbackContext, LlmResponse], Any]:
@@ -514,8 +517,8 @@ def _build_after_model_callback(
             [v.detail for v in result.violations],
         )
 
+        feedback = result.feedback_prompt
         if model is not None and hasattr(model, "generate_content_async"):
-            feedback = result.feedback_prompt
             reprompt_req = types.Content(
                 role="user",
                 parts=[types.Part(text=f"Original output:\n{raw_text}\n\n{feedback}")],
@@ -526,6 +529,29 @@ def _build_after_model_callback(
                     return resp
             except Exception as exc:
                 logger.warning("Corrective re-prompt failed: %s", exc)
+        else:
+            try:
+                from google import genai
+                client = genai.Client()
+                model_name = (
+                    config.model if config is not None else AgentConfig().model
+                )
+                reprompt = (
+                    f"Your previous commentary violated style guide constraints:\n"
+                    f"{raw_text}\n\n"
+                    f"{feedback}\n\n"
+                    f"Rewrite the commentary to strictly eliminate all banned words and violations. "
+                    f"Reply with the post text only."
+                )
+                resp = await client.aio.models.generate_content(
+                    model=model_name,
+                    contents=reprompt,
+                )
+                if resp.text:
+                    new_parts = [types.Part(text=resp.text)]
+                    return LlmResponse(content=types.Content(role="model", parts=new_parts))
+            except Exception as exc:
+                logger.warning("Corrective re-prompt via genai client failed: %s", exc)
 
         return None
 
@@ -563,8 +589,14 @@ def create_commentary_agent(
         else:
             tools.append(google_search)
 
-    guard = guardrail or (StyleGuardrail() if context is not None else None)
-    after_model = _build_after_model_callback(model=model, guardrail=guard)
+    guard = guardrail or (
+        StyleGuardrail.from_markdown(context.writer_style_guide)
+        if context is not None
+        else None
+    )
+    after_model = _build_after_model_callback(
+        config=config, model=model, guardrail=guard
+    )
     after_agent = _build_after_agent_callback(config, guardrail=guard)
 
     agent = LlmAgent(
@@ -626,7 +658,11 @@ async def synthesize_commentary(
         curation_rationale=rationale,
         writer_prompt=context.writer_system_prompt if context else None,
     )
-    guard = guardrail or (StyleGuardrail() if context is not None else None)
+    guard = guardrail or (
+        StyleGuardrail.from_markdown(context.writer_style_guide)
+        if context is not None
+        else None
+    )
 
     class _ContextStub:
         session = type(
