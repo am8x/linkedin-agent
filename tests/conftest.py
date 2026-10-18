@@ -21,7 +21,7 @@ from google.genai import types
 
 from src.agent.pipeline import PipelineComponents
 from src.config import AgentConfig, AppConfig, RenderConfig, Secrets, TwitterConfig
-from src.linkedin.models import LinkedInPostResult
+from src.linkedin.models import CreateCommentResponse, LinkedInPostResult
 from src.storage.ledger import PublicationLedger
 from src.twitter.fetcher import FetchResult
 from src.twitter.models import SourceTweet
@@ -97,12 +97,23 @@ class FakePage:
         self.fail_goto = False
         self.settle_ms = 0
         self.events: list[str] = []
+        self.html: str = ""
 
     async def goto(self, url: str, **kwargs: Any) -> None:
         if self.fail_goto:
             raise RuntimeError("fake: navigation failed")
         self.visited.append(url)
         self.events.append("goto")
+
+    async def set_content(self, html: str, **kwargs: Any) -> None:
+        self.html = html
+        self.events.append("set_content")
+
+    async def screenshot(self, path: str | None = None, **kwargs: Any) -> bytes:
+        assert path is not None, "screenshot needs a destination path"
+        write_png(Path(path), self.width, self.height)
+        self.events.append("screenshot")
+        return b""
 
     async def add_style_tag(self, content: str = "", **kwargs: Any) -> None:
         self.styles.append(content)
@@ -182,11 +193,20 @@ class FakeLinkedInClient:
     def __init__(self, *, fail: Exception | None = None) -> None:
         self.uploaded: list[str] = []
         self.posted: list[str] = []
+        self.comments: list[tuple[str, str]] = []
         self.fail = fail
         self.closed = False
 
     async def aclose(self) -> None:
         self.closed = True
+
+    async def create_comment(self, post_urn: str, text: str) -> CreateCommentResponse:
+        if self.fail is not None:
+            raise self.fail
+        self.comments.append((post_urn, text))
+        return CreateCommentResponse(
+            comment_urn=f"urn:li:comment:({post_urn},{len(self.comments)})"
+        )
 
 
 class FakePublisher:
@@ -299,17 +319,23 @@ async def _default_fake_curator(
             candidate_evaluations=[],
         )
     winner = candidates[0]
+    winner_id = str(winner.get("tweet_id") or winner.get("id", ""))
     return CuratorDecision(
         status="SELECTED",
-        selected_tweet_id=str(winner.get("tweet_id")),
+        selected_candidate_id=winner_id,
+        selected_tweet_id=winner_id,
         selection_rationale="Top engineering signal candidate.",
-        ranked_runner_up_ids=[str(c.get("tweet_id")) for c in candidates[1:]],
+        ranked_runner_up_ids=[
+            str(c.get("tweet_id") or c.get("id", "")) for c in candidates[1:]
+        ],
         candidate_evaluations=[
             CandidateEvaluation(
-                tweet_id=str(c.get("tweet_id")),
-                author_handle=str(c.get("author_handle")),
+                candidate_id=str(c.get("tweet_id") or c.get("id", "")),
+                tweet_id=str(c.get("tweet_id") or c.get("id", "")),
+                author_handle=str(c.get("author_handle") or c.get("author_or_source", "")),
+                author_or_source=str(c.get("author_or_source") or c.get("author_handle", "")),
                 relevance_score=9,
-                evaluation_notes="Relevant tweet",
+                evaluation_notes="Relevant candidate",
             )
             for c in candidates
         ],

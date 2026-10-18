@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import re
 import signal
 import sys
 from collections.abc import Awaitable, Callable, Sequence
@@ -39,6 +40,7 @@ from src.agent.pipeline import (
 from src.agent.state import (
     STATUS_DRY_RUN,
     STATUS_NO_NEW_TWEETS,
+    STATUS_NO_QUALIFIED_CANDIDATE,
     STATUS_SKIPPED,
     STATUS_SUCCESS,
 )
@@ -57,6 +59,9 @@ EXIT_INTERRUPTED = 130
 # Exact operator-facing messages referenced by quickstart.md.
 MSG_DRY_RUN = "[DRY-RUN] Publication skipped. Pipeline finished successfully."
 MSG_NO_NEW_TWEETS = "[INFO] No new unposted tweets found in the 12-hour window."
+MSG_NO_QUALIFIED_CANDIDATE = (
+    "[INFO] No candidate tweets met the curation quality threshold."
+)
 MSG_SKIPPED = "[SKIPPED] Publication declined by operator."
 MSG_FAILED = "[FAILED] Pipeline did not complete successfully."
 
@@ -75,6 +80,7 @@ class RunnerOptions:
     auto_publish: bool = False
     dry_run: bool = False
     accounts: list[str] | None = None
+    tweet: str | None = None
     theme: str | None = None
     grounding: bool | None = None
     config_path: Path | None = None
@@ -125,6 +131,15 @@ def build_parser() -> argparse.ArgumentParser:
             "Run discovery, capture, and commentary but skip LinkedIn "
             "publication (zero LinkedIn API calls)."
         ),
+    )
+    parser.add_argument(
+        "--tweet",
+        "--tweet-url",
+        dest="tweet",
+        type=str,
+        default=None,
+        metavar="URL_OR_ID",
+        help="Process a specific tweet by URL or numeric ID instead of sweeping timelines.",
     )
     parser.add_argument(
         "--accounts",
@@ -183,6 +198,19 @@ def parse_accounts(values: list[str] | None) -> list[str] | None:
     return handles or None
 
 
+def parse_tweet_target(value: str | None) -> str | None:
+    """Extract numeric tweet ID from a tweet URL or raw ID string."""
+    if not value:
+        return None
+    cleaned = value.strip().rstrip("/")
+    if cleaned.isdigit():
+        return cleaned
+    match = re.search(r"/status/(\d+)", cleaned)
+    if match:
+        return match.group(1)
+    raise SystemExit(f"Invalid tweet URL or ID: {value!r}")
+
+
 def parse_args(argv: Sequence[str] | None = None) -> RunnerOptions:
     """Parse CLI arguments into :class:`RunnerOptions`."""
     namespace = build_parser().parse_args(argv)
@@ -197,6 +225,7 @@ def parse_args(argv: Sequence[str] | None = None) -> RunnerOptions:
         auto_publish=bool(namespace.auto_publish),
         dry_run=bool(namespace.dry_run),
         accounts=parse_accounts(namespace.accounts),
+        tweet=parse_tweet_target(namespace.tweet),
         theme=namespace.theme,
         grounding=False if namespace.no_grounding else None,
         config_path=namespace.config,
@@ -362,6 +391,16 @@ class PipelineRunner:
         elif status == STATUS_SKIPPED:
             console.print(f"[bold yellow]{MSG_SKIPPED}[/bold yellow]")
             logger.info(MSG_SKIPPED)
+        elif status == STATUS_NO_QUALIFIED_CANDIDATE:
+            console.print(f"[bold yellow]{MSG_NO_QUALIFIED_CANDIDATE}[/bold yellow]")
+            rationale = str(result.get("curation_rationale") or "")
+            if rationale:
+                console.print(f"[dim]Curator Rationale: {rationale}[/dim]")
+            logger.info(
+                "No qualified candidates found in %dh window. %s",
+                self.config.twitter.lookback_hours,
+                rationale,
+            )
         else:
             console.print(f"[bold red]{MSG_FAILED}[/bold red] {result.error or ''}")
             logger.error("Pipeline failed: %s", result.error)
@@ -379,6 +418,7 @@ class PipelineRunner:
                 accounts=self.accounts(),
                 dry_run=self.options.dry_run,
                 auto_publish=self.options.effective_auto_publish,
+                target_tweet_id=self.options.tweet,
             ),
         )
         self.report(result)

@@ -7,6 +7,7 @@ calls.  Higher-level publish orchestration lives in
 
 from __future__ import annotations
 
+import urllib.parse
 from pathlib import Path
 from types import TracebackType
 from typing import Any
@@ -14,6 +15,8 @@ from typing import Any
 import httpx
 
 from src.linkedin.models import (
+    CreateCommentRequest,
+    CreateCommentResponse,
     LinkedInAPIError,
     RegisterUploadRequest,
     RegisterUploadResponse,
@@ -192,6 +195,37 @@ class LinkedInClient:
             response_headers=dict(response.headers),
         )
         logger.info("Created LinkedIn post %s", parsed.post_urn)
+        return parsed
+
+    # -- step 4: create first comment --------------------------------------
+    async def create_comment(
+        self,
+        post_urn: str,
+        text: str,
+        *,
+        actor: str | None = None,
+    ) -> CreateCommentResponse:
+        """Post a comment on an existing LinkedIn share or UGC post."""
+        clean_actor = actor or self.person_urn or self._require_person_urn()
+        request = CreateCommentRequest(
+            actor=clean_actor,
+            message=text,
+        )
+        encoded_urn = urllib.parse.quote(urllib.parse.unquote(post_urn), safe="")
+        url_path = f"/v2/socialActions/{encoded_urn}/comments"
+        response = await self._client.post(
+            url_path,
+            json=request.to_payload(),
+            headers=self.default_headers(),
+        )
+        self._raise_for_status(response, "socialActions comments")
+
+        payload = self._safe_json(response)
+        parsed = CreateCommentResponse.parse(
+            payload,
+            response_headers=dict(response.headers),
+        )
+        logger.info("Created LinkedIn comment %s on %s", parsed.comment_urn, post_urn)
         return parsed
 
     # -- helpers ------------------------------------------------------------

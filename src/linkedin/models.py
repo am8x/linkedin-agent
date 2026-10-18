@@ -271,6 +271,50 @@ class PublicationRecord(BaseModel):
         return self.status == "PUBLISHED"
 
 
+# ---------------------------------------------------------------------------
+# First comment — socialActions API
+# ---------------------------------------------------------------------------
+class CreateCommentRequest(BaseModel):
+    """Payload for POST /v2/socialActions/{postUrn}/comments."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    actor: str = Field(description="Person URN, e.g. urn:li:person:8675309")
+    message: str = Field(description="Comment body text")
+
+    def to_payload(self) -> dict[str, Any]:
+        return {
+            "actor": ensure_person_urn(self.actor),
+            "message": {
+                "text": self.message,
+            },
+        }
+
+
+class CreateCommentResponse(BaseModel):
+    """Parsed response from creating a comment."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    comment_urn: str
+    raw: dict[str, Any] = Field(default_factory=dict)
+
+    @classmethod
+    def parse(
+        cls,
+        payload: dict[str, Any],
+        *,
+        response_headers: dict[str, str] | None = None,
+    ) -> CreateCommentResponse:
+        headers = {k.lower(): v for k, v in (response_headers or {}).items()}
+        urn = (
+            payload.get("id")
+            or payload.get("urn")
+            or headers.get("x-restli-id", "")
+        )
+        return cls(comment_urn=str(urn), raw=payload if isinstance(payload, dict) else {})
+
+
 def ensure_person_urn(value: str) -> str:
     """Normalise a bare member id or person URN into ``urn:li:person:<id>``."""
     cleaned = value.strip()
@@ -282,6 +326,8 @@ def ensure_person_urn(value: str) -> str:
 
 
 __all__ = [
+    "CreateCommentRequest",
+    "CreateCommentResponse",
     "LIFECYCLE_PUBLISHED",
     "LinkedInAPIError",
     "LinkedInPostResult",

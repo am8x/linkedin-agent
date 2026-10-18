@@ -26,6 +26,7 @@ from src.agent.capture import CardCaptureAgent, create_capture_agent
 from src.agent.commentary import create_commentary_agent, synthesize_commentary
 from src.agent.context import ContextLoader
 from src.agent.curator import TweetCuratorAgent, create_curator_agent
+from src.agent.extraction import ArticleExtractionAgent, create_article_extraction_agent
 from src.agent.ingestion import TweetIngestionAgent, create_ingestion_agent
 from src.agent.publisher import LinkedInPublisherAgent, create_publisher_agent
 from src.agent.state import (
@@ -33,6 +34,7 @@ from src.agent.state import (
     KEY_CURATION_RATIONALE,
     KEY_ERROR,
     KEY_EXECUTION_STATUS,
+    KEY_SELECTED_ITEM,
     KEY_SELECTED_TWEET,
     PipelineSessionState,
     new_session_state,
@@ -43,7 +45,7 @@ logger = get_logger(__name__)
 
 PIPELINE_APPLICATION_NAME = "linkedin_sidekick"
 PIPELINE_AGENT_NAME = "linkedin_sidekick_pipeline"
-PIPELINE_DESCRIPTION = "Sequential tweet-to-LinkedIn pipeline: ingest → curate → capture → comment → publish."
+PIPELINE_DESCRIPTION = "Sequential multi-source pipeline: ingest → curate → extract → capture → comment → publish."
 DEFAULT_USER_ID = "sidekick"
 TRIGGER_MESSAGE = "Execute the LinkedIn Sidekick pipeline."
 
@@ -56,8 +58,11 @@ class PipelineComponents:
 
     ledger: Any = None
     fetcher: Any = None
+    news_fetcher: Any = None
+    article_extractor: Any = None
     curator_evaluator: Any = None
     renderer_factory: Any = None
+    news_renderer_factory: Any = None
     linkedin_client: Any = None
     linkedin_client_factory: Any = None
     publisher_factory: Any = None
@@ -115,7 +120,10 @@ def build_pipeline(
     components: PipelineComponents | None = None,
     ledger: Any = None,
     fetcher: Any = None,
+    news_fetcher: Any = None,
+    article_extractor: Any = None,
     renderer_factory: Any = None,
+    news_renderer_factory: Any = None,
     linkedin_client: Any = None,
     linkedin_client_factory: Any = None,
     publisher_factory: Any = None,
@@ -125,7 +133,7 @@ def build_pipeline(
     context_loader: Any = None,
     name: str = PIPELINE_AGENT_NAME,
 ) -> SequentialAgent:
-    """Assemble the five-stage ``SequentialAgent`` from configuration.
+    """Assemble the six-stage ``SequentialAgent`` from configuration.
 
     Individual stages can also be overridden directly via keyword arguments;
     :class:`PipelineComponents` is the tidier route when injecting many.
@@ -133,10 +141,23 @@ def build_pipeline(
     if components is not None:
         ledger = ledger if ledger is not None else components.ledger
         fetcher = fetcher if fetcher is not None else components.fetcher
+        news_fetcher = (
+            news_fetcher if news_fetcher is not None else components.news_fetcher
+        )
+        article_extractor = (
+            article_extractor
+            if article_extractor is not None
+            else components.article_extractor
+        )
         renderer_factory = (
             renderer_factory
             if renderer_factory is not None
             else components.renderer_factory
+        )
+        news_renderer_factory = (
+            news_renderer_factory
+            if news_renderer_factory is not None
+            else components.news_renderer_factory
         )
         linkedin_client = (
             linkedin_client
@@ -182,15 +203,20 @@ def build_pipeline(
         pipeline_context = None
 
     ingestion: TweetIngestionAgent = create_ingestion_agent(
-        config, ledger=ledger, fetcher=fetcher
+        config, ledger=ledger, fetcher=fetcher, news_fetcher=news_fetcher
     )
     curator: TweetCuratorAgent = create_curator_agent(
         context=pipeline_context,
         decision_evaluator=curator_evaluator,
         model_name=getattr(getattr(config, "agent", None), "model", "gemini-3.8-flash"),
     )
+    extraction: ArticleExtractionAgent = create_article_extraction_agent(
+        extractor=article_extractor
+    )
     capture: CardCaptureAgent = create_capture_agent(
-        config, renderer_factory=renderer_factory
+        config,
+        renderer_factory=renderer_factory,
+        news_renderer_factory=news_renderer_factory,
     )
     commentary = create_commentary_agent(
         config.agent,
@@ -199,7 +225,7 @@ def build_pipeline(
     )
 
     async def _default_regenerate_commentary(state: Any) -> dict[str, Any]:
-        sel = state.get(KEY_SELECTED_TWEET) or {}
+        sel = state.get(KEY_SELECTED_ITEM) or state.get(KEY_SELECTED_TWEET) or {}
         rat = str(state.get(KEY_CURATION_RATIONALE) or "")
         comm = await synthesize_commentary(
             sel,
@@ -232,7 +258,7 @@ def build_pipeline(
         pipeline = SequentialAgent(
             name=name,
             description=PIPELINE_DESCRIPTION,
-            sub_agents=[ingestion, curator, capture, commentary, publisher],
+            sub_agents=[ingestion, curator, extraction, capture, commentary, publisher],
         )
     finally:
         ctx.__exit__(None, None, None)
@@ -333,20 +359,40 @@ def build_initial_state(
     config: Any,
     *,
     accounts: list[str] | None = None,
+    feeds: list[dict[str, Any]] | None = None,
     dry_run: bool = False,
     auto_publish: bool = False,
+    target_tweet_id: str | None = None,
 ) -> PipelineSessionState:
     """Compose the state dictionary seeded into a pipeline run."""
     resolved_accounts = (
         [account.lstrip("@") for account in accounts]
         if accounts
-        else list(config.twitter.accounts)
+        else list(getattr(config.twitter, "accounts", []))
+        if hasattr(config, "twitter") and config.twitter is not None
+        else []
     )
+    resolved_feeds = feeds
+    if resolved_feeds is None and hasattr(config, "news") and config.news is not None:
+        raw_feeds = getattr(config.news, "feeds", [])
+        resolved_feeds = [
+            f.model_dump(mode="json") if hasattr(f, "model_dump") else dict(f)
+            for f in raw_feeds
+        ]
+
+    lookback = 12
+    if hasattr(config, "twitter") and hasattr(config.twitter, "lookback_hours"):
+        lookback = int(config.twitter.lookback_hours)
+    elif hasattr(config, "news") and hasattr(config.news, "lookback_hours"):
+        lookback = int(config.news.lookback_hours)
+
     return new_session_state(
         resolved_accounts,
-        lookback_hours=int(config.twitter.lookback_hours),
+        monitored_feeds=resolved_feeds,
+        lookback_hours=lookback,
         dry_run=dry_run,
         auto_publish=auto_publish,
+        target_tweet_id=target_tweet_id,
     )
 
 

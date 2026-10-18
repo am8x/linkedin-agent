@@ -131,6 +131,20 @@ class TestArgumentParsing:
     def test_parse_accounts_edge_cases(self, value, expected) -> None:
         assert parse_accounts(value) == expected
 
+    def test_tweet_url_flag(self) -> None:
+        options = parse_args(
+            ["--tweet-url", "https://x.com/chetaslua/status/2111661115117900177"]
+        )
+        assert options.tweet == "2111661115117900177"
+
+    def test_tweet_id_flag(self) -> None:
+        options = parse_args(["--tweet", "2111661115117900177"])
+        assert options.tweet == "2111661115117900177"
+
+    def test_invalid_tweet_target_rejected(self) -> None:
+        with pytest.raises(SystemExit):
+            parse_args(["--tweet", "not-a-valid-target"])
+
 
 # ---------------------------------------------------------------------------
 # Single-run mode
@@ -410,3 +424,31 @@ class TestExitCodes:
 
     def test_main_handles_an_argparse_error_gracefully(self) -> None:
         assert main(["--not-a-real-flag"]) == 2
+
+    async def test_no_qualified_candidate_reports_cleanly(
+        self, config, pipeline_components
+    ) -> None:
+        from io import StringIO
+
+        from src.agent.pipeline import PipelineRunResult
+        from src.agent.state import STATUS_NO_QUALIFIED_CANDIDATE
+        from src.runner import MSG_NO_QUALIFIED_CANDIDATE
+
+        console = Console(file=StringIO(), force_terminal=False, width=120)
+        runner = make_runner(
+            config,
+            pipeline_components,
+            RunnerOptions(auto_publish=True),
+            console=console,
+        )
+        fake_result = PipelineRunResult(
+            status=STATUS_NO_QUALIFIED_CANDIDATE,
+            state={
+                "curation_rationale": "All candidate tweets were off-topic marketing."
+            },
+            failed=False,
+        )
+        runner.report(fake_result)
+        output = console.file.getvalue()
+        assert MSG_NO_QUALIFIED_CANDIDATE in output
+        assert "All candidate tweets were off-topic marketing." in output

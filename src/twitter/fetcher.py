@@ -11,7 +11,8 @@ same guarantees:
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable
+import asyncio
+from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -23,6 +24,8 @@ logger = get_logger(__name__)
 
 DEFAULT_LOOKBACK_HOURS = 12
 DEFAULT_MAX_TWEETS_PER_ACCOUNT = 40
+DEFAULT_ACCOUNT_DELAY_SECONDS = 2.0
+DEFAULT_RATE_LIMIT_BACKOFF_SECONDS = 5.0
 TIMELINE_TYPE = "Tweets"  # Twitter's "Tweets" tab: no replies, no retweets
 
 
@@ -216,6 +219,8 @@ class TimelineFetcher:
         exclude_retweets: bool = True,
         now_provider: Callable[[], datetime] | None = None,
         timeline_type: str = TIMELINE_TYPE,
+        account_delay_seconds: float = DEFAULT_ACCOUNT_DELAY_SECONDS,
+        sleeper: Callable[[float], Awaitable[Any]] | None = None,
     ) -> None:
         self.client = client
         self.lookback_hours = lookback_hours
@@ -224,19 +229,27 @@ class TimelineFetcher:
         self.exclude_retweets = exclude_retweets
         self.now_provider = now_provider or (lambda: datetime.now(UTC))
         self.timeline_type = timeline_type
+        self.account_delay_seconds = float(account_delay_seconds)
+        self.sleeper: Callable[[float], Awaitable[Any]] = sleeper or asyncio.sleep
+        self._user_id_cache: dict[str, str] = {}
 
     # -- account level ------------------------------------------------------
     async def fetch_user_id(self, handle: str) -> str:
-        """Resolve a screen name to its numeric Twitter user id."""
-        user = await self.client.get_user_by_screen_name(handle.lstrip("@"))
+        """Resolve a screen name to its numeric Twitter user id, caching results."""
+        clean = handle.lstrip("@").lower()
+        cached = self._user_id_cache.get(clean)
+        if cached is not None:
+            return cached
+
+        user = await self.client.get_user_by_screen_name(clean)
         user_id = getattr(user, "id", None)
         if not user_id:
             raise TimelineFetchError(f"Could not resolve Twitter user id for @{handle}")
-        return str(user_id)
+        user_id_str = str(user_id)
+        self._user_id_cache[clean] = user_id_str
+        return user_id_str
 
-    async def fetch_account(self, handle: str) -> tuple[list[SourceTweet], int]:
-        """Fetch, convert, and filter one account's timeline."""
-        clean = handle.lstrip("@")
+    async def _fetch_account_direct(self, clean: str) -> tuple[list[SourceTweet], int]:
         user_id = await self.fetch_user_id(clean)
         raw_tweets = await self.client.get_user_tweets(
             user_id,
@@ -260,6 +273,40 @@ class TimelineFetcher:
         )
         return tweets, skipped
 
+    async def fetch_account(self, handle: str) -> tuple[list[SourceTweet], int]:
+        """Fetch, convert, and filter one account's timeline with transient 429 retry."""
+        clean = handle.lstrip("@")
+        try:
+            return await self._fetch_account_direct(clean)
+        except Exception as exc:
+            exc_name = type(exc).__name__
+            exc_msg = str(exc)
+            if (
+                "TooManyRequests" in exc_name
+                or "429" in exc_msg
+                or "Rate limit" in exc_msg
+            ):
+                logger.warning(
+                    "Rate limit hit while fetching @%s; backing off for %.1fs and retrying once...",
+                    clean,
+                    DEFAULT_RATE_LIMIT_BACKOFF_SECONDS,
+                )
+                await self.sleeper(DEFAULT_RATE_LIMIT_BACKOFF_SECONDS)
+                return await self._fetch_account_direct(clean)
+            raise
+
+    async def fetch_tweet_by_id(self, tweet_id: str) -> SourceTweet:
+        """Fetch a specific tweet by its numeric ID using Twitter's TweetDetail endpoint."""
+        raw_tweet = await self.client.get_tweet_by_id(str(tweet_id))
+        if raw_tweet is None:
+            raise TimelineFetchError(f"Tweet {tweet_id} was not found.")
+        parsed = to_source_tweet(raw_tweet)
+        if parsed is None:
+            raise TimelineFetchError(
+                f"Could not parse tweet {tweet_id} into a SourceTweet."
+            )
+        return parsed
+
     # -- sweep level --------------------------------------------------------
     async def fetch(
         self,
@@ -275,8 +322,15 @@ class TimelineFetcher:
                 to propagate the first error.
         """
         result = FetchResult()
-        for handle in handles:
+        for i, handle in enumerate(handles):
             clean = handle.lstrip("@")
+            if i > 0 and self.account_delay_seconds > 0:
+                logger.debug(
+                    "Pacing account fetch: sleeping %.1fs before @%s",
+                    self.account_delay_seconds,
+                    clean,
+                )
+                await self.sleeper(self.account_delay_seconds)
             try:
                 tweets, skipped = await self.fetch_account(clean)
             except Exception as exc:
@@ -307,12 +361,21 @@ def build_fetcher(client: Any, twitter_config: Any) -> TimelineFetcher:
         ),
         exclude_replies=bool(getattr(twitter_config, "exclude_replies", True)),
         exclude_retweets=bool(getattr(twitter_config, "exclude_retweets", True)),
+        account_delay_seconds=float(
+            getattr(
+                twitter_config,
+                "account_delay_seconds",
+                DEFAULT_ACCOUNT_DELAY_SECONDS,
+            )
+        ),
     )
 
 
 __all__ = [
+    "DEFAULT_ACCOUNT_DELAY_SECONDS",
     "DEFAULT_LOOKBACK_HOURS",
     "DEFAULT_MAX_TWEETS_PER_ACCOUNT",
+    "DEFAULT_RATE_LIMIT_BACKOFF_SECONDS",
     "FetchResult",
     "TIMELINE_TYPE",
     "TimelineFetchError",

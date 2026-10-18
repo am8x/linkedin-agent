@@ -87,7 +87,110 @@ def patch_twikit_user_model() -> None:
     logger.debug("twikit User model patched for omitted profile fields.")
 
 
+def patch_twikit_tweet_model() -> None:
+    """Make ``twikit``'s ``Client.get_tweet_by_id`` tolerate modern cursor structures."""
+    from functools import partial
+
+    import twikit.client.client as tw_client
+    from twikit.client.client import tweet_from_data
+    from twikit.errors import TweetNotAvailable
+    from twikit.utils import Result, find_dict
+
+    original = tw_client.Client.get_tweet_by_id
+    if getattr(original, _PATCH_MARKER, False):
+        return
+
+    async def _patched_get_tweet_by_id(
+        self: Any, tweet_id: str, cursor: str | None = None
+    ) -> Any:
+        try:
+            return await original(self, tweet_id, cursor)
+        except KeyError as exc:
+            if "itemContent" not in str(exc):
+                raise
+            response, _ = await self.gql.tweet_detail(tweet_id, cursor)
+            if "errors" in response:
+                raise TweetNotAvailable(response["errors"][0]["message"]) from exc
+
+            entries = find_dict(response, "entries", find_one=True)[0]
+            reply_to = []
+            replies_list = []
+            related_tweets = []
+            tweet = None
+
+            for entry in entries:
+                if entry.get("entryId", "").startswith("cursor"):
+                    continue
+                tweet_object = tweet_from_data(self, entry)
+                if tweet_object is None:
+                    continue
+
+                if entry.get("entryId", "").startswith("tweetdetailrelatedtweets"):
+                    related_tweets.append(tweet_object)
+                    continue
+
+                if entry.get("entryId") == f"tweet-{tweet_id}":
+                    tweet = tweet_object
+                else:
+                    if tweet is None:
+                        reply_to.append(tweet_object)
+                    else:
+                        replies = []
+                        sr_cursor = None
+                        show_replies = None
+                        items = entry.get("content", {}).get("items", [])
+                        for reply in items[1:]:
+                            if "tweetcomposer" in reply.get("entryId", ""):
+                                continue
+                            if "tweet" in reply.get("entryId", ""):
+                                rpl = tweet_from_data(self, reply)
+                                if rpl is not None:
+                                    replies.append(rpl)
+                            if "cursor" in reply.get("entryId", ""):
+                                sr_cursor = (
+                                    reply.get("item", {})
+                                    .get("itemContent", {})
+                                    .get("value")
+                                )
+                                show_replies = partial(
+                                    self._show_more_replies, tweet_id, sr_cursor
+                                )
+                        tweet_object.replies = Result(replies, show_replies, sr_cursor)
+                        replies_list.append(tweet_object)
+
+                        display_type = find_dict(entry, "tweetDisplayType", True)
+                        if display_type and display_type[0] == "SelfThread":
+                            tweet.thread = [tweet_object, *replies]
+
+            if entries and entries[-1].get("entryId", "").startswith("cursor"):
+                content = entries[-1].get("content", {})
+                item_content = content.get("itemContent")
+                if isinstance(item_content, dict):
+                    reply_next_cursor = item_content.get("value")
+                else:
+                    reply_next_cursor = content.get("value")
+                _fetch_more_replies = partial(
+                    self._get_more_replies, tweet_id, reply_next_cursor
+                )
+            else:
+                reply_next_cursor = None
+                _fetch_more_replies = None
+
+            if tweet is not None:
+                tweet.replies = Result(
+                    replies_list, _fetch_more_replies, reply_next_cursor
+                )
+                tweet.reply_to = reply_to
+                tweet.related_tweets = related_tweets
+            return tweet
+
+    setattr(_patched_get_tweet_by_id, _PATCH_MARKER, True)
+    tw_client.Client.get_tweet_by_id = _patched_get_tweet_by_id  # type: ignore[method-assign]
+    logger.debug("twikit get_tweet_by_id patched for modern cursor structures.")
+
+
 __all__ = [
     "ensure_proactor_event_loop",
+    "patch_twikit_tweet_model",
     "patch_twikit_user_model",
 ]

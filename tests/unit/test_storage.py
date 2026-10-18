@@ -377,3 +377,73 @@ class TestPublicationLedger:
         assert reloaded is not None
         assert reloaded.curation_rationale == "Rationale committed"
         ledger.close()
+
+    def test_multisource_deduplication_and_comment_persistence(
+        self, tmp_path: Path
+    ) -> None:
+        db_path = tmp_path / "multisource.db"
+        ledger = PublicationLedger.open(db_path)
+
+        article_url = "https://arstechnica.com/tech-news/2026/10/sqlite-updates"
+        entry = make_entry(
+            tweet_id="art_12345",
+            author_handle="Ars Technica",
+            tweet_text="Headline text",
+            tweet_url=article_url,
+        ).model_copy(
+            update={
+                "source_type": "news_article",
+                "source_url": article_url,
+                "article_title": "SQLite Updates",
+            }
+        )
+
+        assert not ledger.is_published(source_url=article_url)
+        assert ledger.unposted_source_urls([article_url, "https://other.com"]) == [
+            article_url,
+            "https://other.com",
+        ]
+
+        # Claim and publish
+        ledger.claim(entry)
+        ledger.commit_publication(
+            "art_12345",
+            linkedin_post_urn="urn:li:share:999",
+            linkedin_asset_urn=None,
+            first_comment_text=f"Source article: {article_url}",
+            first_comment_urn="urn:li:comment:111",
+            first_comment_status="POSTED_API",
+        )
+
+        assert ledger.is_published(source_url=article_url)
+        assert ledger.published_source_urls([article_url, "https://other.com"]) == {
+            article_url
+        }
+        assert ledger.unposted_source_urls([article_url, "https://other.com"]) == [
+            "https://other.com"
+        ]
+
+        published = ledger.get(source_url=article_url)
+        assert published is not None
+        assert published.source_type == "news_article"
+        assert published.article_title == "SQLite Updates"
+        assert published.first_comment_status == "POSTED_API"
+        assert published.first_comment_urn == "urn:li:comment:111"
+
+        # Attempt duplicate claim with same source_url should raise DuplicatePublicationError
+        duplicate_entry = make_entry(
+            tweet_id="art_67890",
+            author_handle="Ars Technica",
+            tweet_text="Different ID same URL",
+            tweet_url=article_url,
+        ).model_copy(
+            update={
+                "source_type": "news_article",
+                "source_url": article_url,
+            }
+        )
+        with pytest.raises(DuplicatePublicationError):
+            ledger.claim(duplicate_entry)
+
+        ledger.close()
+

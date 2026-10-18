@@ -32,6 +32,12 @@ CREATE TABLE IF NOT EXISTS publication_ledger (
     ),
     error_message TEXT,
     curation_rationale TEXT,
+    source_type TEXT NOT NULL DEFAULT 'tweet',
+    source_url TEXT,
+    article_title TEXT,
+    first_comment_text TEXT,
+    first_comment_urn TEXT,
+    first_comment_status TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now', 'utc')),
     published_at TEXT
 );
@@ -40,6 +46,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_ledger_tweet_id
     ON publication_ledger(tweet_id);
 CREATE INDEX IF NOT EXISTS idx_ledger_status ON publication_ledger(status);
 CREATE INDEX IF NOT EXISTS idx_ledger_author ON publication_ledger(author_handle);
+CREATE INDEX IF NOT EXISTS idx_ledger_source_url ON publication_ledger(source_url);
 """
 
 
@@ -116,6 +123,7 @@ class Database:
         """Create the ledger table and its indices if they do not exist."""
         connection = self.connect()
         try:
+            self._ensure_schema_compatibility(connection)
             connection.executescript(SCHEMA_SQL)
             self._ensure_schema_compatibility(connection)
         finally:
@@ -131,9 +139,24 @@ class Database:
             if cursor.fetchone():
                 cursor.execute(f"PRAGMA table_info({table_name})")
                 columns = {row[1] for row in cursor.fetchall()}
-                if "curation_rationale" not in columns:
+                new_columns = [
+                    ("curation_rationale", "TEXT"),
+                    ("source_type", "TEXT NOT NULL DEFAULT 'tweet'"),
+                    ("source_url", "TEXT"),
+                    ("article_title", "TEXT"),
+                    ("first_comment_text", "TEXT"),
+                    ("first_comment_urn", "TEXT"),
+                    ("first_comment_status", "TEXT"),
+                ]
+                for col_name, col_type in new_columns:
+                    if col_name not in columns:
+                        cursor.execute(
+                            f"ALTER TABLE {table_name} ADD COLUMN {col_name} {col_type}"
+                        )
+                if table_name == "publication_ledger":
                     cursor.execute(
-                        f"ALTER TABLE {table_name} ADD COLUMN curation_rationale TEXT"
+                        "CREATE INDEX IF NOT EXISTS idx_ledger_source_url "
+                        "ON publication_ledger(source_url)"
                     )
 
     def is_initialized(self) -> bool:

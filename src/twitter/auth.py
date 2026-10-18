@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Any
 
 from src.logging import get_logger
-from src.twitter.compat import patch_twikit_user_model
+from src.twitter.compat import patch_twikit_tweet_model, patch_twikit_user_model
 
 logger = get_logger(__name__)
 
@@ -161,6 +161,7 @@ def _import_client() -> Any:
             "dependencies with 'pip install -r requirements.txt'."
         ) from exc
     patch_twikit_user_model()
+    patch_twikit_tweet_model()
     return Client
 
 

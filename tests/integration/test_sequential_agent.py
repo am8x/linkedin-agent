@@ -73,6 +73,7 @@ class TestPipelineAssembly:
         assert describe_pipeline(pipeline) == [
             "tweet_ingestion_agent",
             "tweet_curator_agent",
+            "article_extraction_agent",
             "card_capture_agent",
             "commentary_agent",
             "linkedin_publisher_agent",

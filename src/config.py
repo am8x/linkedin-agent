@@ -51,6 +51,7 @@ class TwitterConfig(_Base):
     exclude_replies: bool = True
     exclude_retweets: bool = True
     max_tweets_per_account: int = Field(default=40, ge=1, le=500)
+    account_delay_seconds: float = Field(default=2.0, ge=0.0, le=60.0)
 
     @field_validator("accounts", mode="before")
     @classmethod
@@ -72,6 +73,59 @@ class TwitterConfig(_Base):
 
     def lookback_cutoff(self, now: datetime | None = None) -> datetime:
         """Return the UTC instant before which tweets are considered stale."""
+        reference = now or datetime.now(UTC)
+        if reference.tzinfo is None:
+            reference = reference.replace(tzinfo=UTC)
+        return reference.astimezone(UTC) - timedelta(hours=self.lookback_hours)
+
+
+class FeedItemConfig(_Base):
+    """Configuration for an individual monitored website RSS/Atom feed."""
+
+    name: str = Field(min_length=1, description="Publication title")
+    url: str = Field(min_length=8, description="RSS/Atom XML URL")
+    category: str | None = Field(default=None)
+    max_items: int | None = Field(default=None, ge=1, le=50)
+
+    @field_validator("name")
+    @classmethod
+    def _validate_name(cls, value: str) -> str:
+        cleaned = value.strip()
+        if not cleaned:
+            raise ValueError("feed name cannot be empty")
+        return cleaned
+
+    @field_validator("url")
+    @classmethod
+    def _validate_url(cls, value: str) -> str:
+        cleaned = value.strip()
+        if not (cleaned.startswith("http://") or cleaned.startswith("https://")):
+            raise ValueError(f"feed url must start with http:// or https://: {cleaned!r}")
+        return cleaned
+
+
+class NewsConfig(_Base):
+    """RSS and website news ingestion settings."""
+
+    lookback_hours: int = Field(default=24, ge=1, le=168)
+    max_articles_per_feed: int = Field(default=8, ge=1, le=50)
+    request_timeout_seconds: float = Field(default=15.0, ge=1.0, le=60.0)
+    user_agent: str = Field(default="LinkedInSidekick/1.0")
+    feeds: list[FeedItemConfig] = Field(default_factory=list)
+
+    @field_validator("feeds")
+    @classmethod
+    def _validate_unique_urls(cls, feeds: list[FeedItemConfig]) -> list[FeedItemConfig]:
+        seen_urls: set[str] = set()
+        for f in feeds:
+            normalized = f.url.strip().lower().rstrip("/")
+            if normalized in seen_urls:
+                raise ValueError(f"duplicate feed url configured: {f.url}")
+            seen_urls.add(normalized)
+        return feeds
+
+    def lookback_cutoff(self, now: datetime | None = None) -> datetime:
+        """Return the UTC instant before which articles are considered stale."""
         reference = now or datetime.now(UTC)
         if reference.tzinfo is None:
             reference = reference.replace(tzinfo=UTC)
@@ -169,6 +223,7 @@ class AppConfig(_Base):
     """Fully resolved application configuration."""
 
     twitter: TwitterConfig = Field(default_factory=TwitterConfig)
+    news: NewsConfig = Field(default_factory=NewsConfig)
     render: RenderConfig = Field(default_factory=RenderConfig)
     agent: AgentConfig = Field(default_factory=AgentConfig)
     scheduler: SchedulerConfig = Field(default_factory=SchedulerConfig)
@@ -267,6 +322,17 @@ def load_config(
         agent_dict["context_dir"] = Path(context_dir_override.strip())
         raw["agent"] = agent_dict
 
+    account_delay_override = resolved_source.get("SIDEKICK_ACCOUNT_DELAY_SECONDS")
+    if account_delay_override and account_delay_override.strip():
+        twitter_dict = dict(raw.get("twitter") or {})
+        try:
+            twitter_dict["account_delay_seconds"] = float(
+                account_delay_override.strip()
+            )
+            raw["twitter"] = twitter_dict
+        except ValueError:
+            pass
+
     try:
         return AppConfig.model_validate(raw)
     except ValidationError as exc:
@@ -279,7 +345,9 @@ __all__ = [
     "ConfigurationError",
     "DEFAULT_CONFIG_PATH",
     "DEFAULT_PROMPT_TEMPLATE",
+    "FeedItemConfig",
     "LoggingConfig",
+    "NewsConfig",
     "RenderConfig",
     "SchedulerConfig",
     "Secrets",

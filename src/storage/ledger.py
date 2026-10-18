@@ -45,17 +45,24 @@ _COLUMNS = (
     "status",
     "error_message",
     "curation_rationale",
+    "source_type",
+    "source_url",
+    "article_title",
+    "first_comment_text",
+    "first_comment_urn",
+    "first_comment_status",
     "created_at",
     "published_at",
 )
 
 
 class DuplicatePublicationError(RuntimeError):
-    """Raised when a tweet has already been published to LinkedIn."""
+    """Raised when an item has already been published to LinkedIn."""
 
-    def __init__(self, tweet_id: str) -> None:
-        super().__init__(f"Tweet {tweet_id} was already published to LinkedIn.")
-        self.tweet_id = tweet_id
+    def __init__(self, identifier: str) -> None:
+        super().__init__(f"Item {identifier} was already published to LinkedIn.")
+        self.identifier = identifier
+        self.tweet_id = identifier
 
 
 class LedgerEntry(BaseModel):
@@ -75,6 +82,12 @@ class LedgerEntry(BaseModel):
     status: LedgerStatus = PENDING
     error_message: str | None = None
     curation_rationale: str | None = None
+    source_type: str = "tweet"
+    source_url: str | None = None
+    article_title: str | None = None
+    first_comment_text: str | None = None
+    first_comment_urn: str | None = None
+    first_comment_status: str | None = None
     created_at: str | None = None
     published_at: str | None = None
 
@@ -114,23 +127,44 @@ class PublicationLedger:
         """Hook for symmetry; connections are short-lived per operation."""
 
     # -- queries ------------------------------------------------------------
-    def get(self, tweet_id: str) -> LedgerEntry | None:
-        """Return the ledger row for ``tweet_id``, or ``None``."""
+    def get(
+        self, tweet_id: str | None = None, *, source_url: str | None = None
+    ) -> LedgerEntry | None:
+        """Return the ledger row for ``tweet_id`` or ``source_url``, or ``None``."""
         with self.database.session() as connection:
-            row = connection.execute(
-                "SELECT * FROM publication_ledger WHERE tweet_id = ?",
-                (tweet_id,),
-            ).fetchone()
+            if source_url is not None:
+                row = connection.execute(
+                    "SELECT * FROM publication_ledger WHERE source_url = ?",
+                    (source_url,),
+                ).fetchone()
+            elif tweet_id is not None:
+                row = connection.execute(
+                    "SELECT * FROM publication_ledger WHERE tweet_id = ?",
+                    (tweet_id,),
+                ).fetchone()
+            else:
+                return None
         return LedgerEntry.from_row(row) if row is not None else None
 
-    def is_published(self, tweet_id: str) -> bool:
-        """Whether ``tweet_id`` already has a ``PUBLISHED`` ledger row."""
+    def is_published(
+        self, tweet_id: str | None = None, *, source_url: str | None = None
+    ) -> bool:
+        """Whether ``tweet_id`` or ``source_url`` already has a ``PUBLISHED`` ledger row."""
         with self.database.session() as connection:
-            row = connection.execute(
-                "SELECT 1 FROM publication_ledger "
-                "WHERE tweet_id = ? AND status = ? LIMIT 1",
-                (tweet_id, PUBLISHED),
-            ).fetchone()
+            if source_url is not None:
+                row = connection.execute(
+                    "SELECT 1 FROM publication_ledger "
+                    "WHERE source_url = ? AND status = ? LIMIT 1",
+                    (source_url, PUBLISHED),
+                ).fetchone()
+            elif tweet_id is not None:
+                row = connection.execute(
+                    "SELECT 1 FROM publication_ledger "
+                    "WHERE tweet_id = ? AND status = ? LIMIT 1",
+                    (tweet_id, PUBLISHED),
+                ).fetchone()
+            else:
+                return False
         return row is not None
 
     def published_tweet_ids(self, tweet_ids: list[str]) -> set[str]:
@@ -156,6 +190,28 @@ class PublicationLedger:
         published = self.published_tweet_ids(tweet_ids)
         return [tid for tid in tweet_ids if tid not in published]
 
+    def published_source_urls(self, source_urls: list[str]) -> set[str]:
+        """Return the subset of ``source_urls`` already published.
+
+        Used by RSS ingestion for a single-query deduplication pass.
+        """
+        candidates = [str(url) for url in source_urls if url]
+        if not candidates:
+            return set()
+        placeholders = ",".join("?" for _ in candidates)
+        with self.database.session() as connection:
+            rows = connection.execute(
+                "SELECT source_url FROM publication_ledger "
+                f"WHERE status = ? AND source_url IN ({placeholders})",
+                (PUBLISHED, *candidates),
+            ).fetchall()
+        return {str(row["source_url"]) for row in rows}
+
+    def unposted_source_urls(self, source_urls: list[str]) -> list[str]:
+        """Return ``source_urls`` that have no ``PUBLISHED`` ledger row."""
+        published = self.published_source_urls(source_urls)
+        return [url for url in source_urls if url not in published]
+
     def list_recent(self, limit: int = 25) -> list[LedgerEntry]:
         """Return the most recently created ledger rows, newest first."""
         with self.database.session() as connection:
@@ -167,7 +223,7 @@ class PublicationLedger:
 
     # -- writes -------------------------------------------------------------
     def claim(self, entry: LedgerEntry) -> LedgerEntry:
-        """Atomically reserve ``entry.tweet_id`` for publication.
+        """Atomically reserve ``entry.tweet_id`` or ``entry.source_url`` for publication.
 
         Raises:
             DuplicatePublicationError: If a ``PUBLISHED`` row already exists.
@@ -175,6 +231,14 @@ class PublicationLedger:
         claimed = entry.model_copy(update={"status": PENDING, "id": None})
         try:
             with self.database.session() as connection:
+                if entry.source_url:
+                    existing_url = connection.execute(
+                        "SELECT status FROM publication_ledger WHERE source_url = ? AND status = ?",
+                        (entry.source_url, PUBLISHED),
+                    ).fetchone()
+                    if existing_url is not None:
+                        raise DuplicatePublicationError(entry.source_url)
+
                 existing = connection.execute(
                     "SELECT status FROM publication_ledger WHERE tweet_id = ?",
                     (entry.tweet_id,),
@@ -187,8 +251,10 @@ class PublicationLedger:
                     INSERT INTO publication_ledger (
                         tweet_id, author_handle, tweet_created_at, tweet_text,
                         tweet_url, linkedin_post_urn, linkedin_asset_urn,
-                        commentary_text, status, error_message, curation_rationale, published_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        commentary_text, status, error_message, curation_rationale,
+                        source_type, source_url, article_title, first_comment_text,
+                        first_comment_urn, first_comment_status, published_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(tweet_id) DO UPDATE SET
                         author_handle = excluded.author_handle,
                         tweet_created_at = excluded.tweet_created_at,
@@ -198,6 +264,12 @@ class PublicationLedger:
                         status = excluded.status,
                         error_message = excluded.error_message,
                         curation_rationale = excluded.curation_rationale,
+                        source_type = excluded.source_type,
+                        source_url = excluded.source_url,
+                        article_title = excluded.article_title,
+                        first_comment_text = excluded.first_comment_text,
+                        first_comment_urn = excluded.first_comment_urn,
+                        first_comment_status = excluded.first_comment_status,
                         published_at = excluded.published_at
                     """,
                     (
@@ -212,6 +284,12 @@ class PublicationLedger:
                         claimed.status,
                         claimed.error_message,
                         claimed.curation_rationale,
+                        claimed.source_type,
+                        claimed.source_url,
+                        claimed.article_title,
+                        claimed.first_comment_text,
+                        claimed.first_comment_urn,
+                        claimed.first_comment_status,
                         claimed.published_at,
                     ),
                 )
@@ -226,9 +304,12 @@ class PublicationLedger:
         linkedin_post_urn: str | None = None,
         linkedin_asset_urn: str | None = None,
         curation_rationale: str | None = None,
+        first_comment_text: str | None = None,
+        first_comment_urn: str | None = None,
+        first_comment_status: str | None = None,
         published_at: str | None = None,
     ) -> LedgerEntry:
-        """Mark a claimed tweet as successfully published, persisting curation rationale."""
+        """Mark a claimed item as successfully published, persisting curation rationale & comments."""
         timestamp = published_at or _utc_now_iso()
         with self.database.session() as connection:
             connection.execute(
@@ -236,6 +317,9 @@ class PublicationLedger:
                 UPDATE publication_ledger
                    SET status = ?, linkedin_post_urn = ?,
                        linkedin_asset_urn = ?, curation_rationale = ?,
+                       first_comment_text = COALESCE(?, first_comment_text),
+                       first_comment_urn = COALESCE(?, first_comment_urn),
+                       first_comment_status = COALESCE(?, first_comment_status),
                        published_at = ?, error_message = NULL
                  WHERE tweet_id = ?
                 """,
@@ -244,13 +328,16 @@ class PublicationLedger:
                     linkedin_post_urn,
                     linkedin_asset_urn,
                     curation_rationale,
+                    first_comment_text,
+                    first_comment_urn,
+                    first_comment_status,
                     timestamp,
                     tweet_id,
                 ),
             )
         recorded = self.get(tweet_id)
         if recorded is None:  # pragma: no cover - defensive
-            raise LookupError(f"Ledger row for tweet {tweet_id} disappeared.")
+            raise LookupError(f"Ledger row for item {tweet_id} disappeared.")
         return recorded
 
     def commit_publication(
@@ -260,14 +347,20 @@ class PublicationLedger:
         linkedin_post_urn: str | None,
         linkedin_asset_urn: str | None,
         curation_rationale: str | None = None,
+        first_comment_text: str | None = None,
+        first_comment_urn: str | None = None,
+        first_comment_status: str | None = None,
         published_at: str | None = None,
     ) -> LedgerEntry:
-        """Mark a claimed tweet as successfully published."""
+        """Mark a claimed item as successfully published."""
         return self.record_publication(
             tweet_id,
             linkedin_post_urn=linkedin_post_urn,
             linkedin_asset_urn=linkedin_asset_urn,
             curation_rationale=curation_rationale,
+            first_comment_text=first_comment_text,
+            first_comment_urn=first_comment_urn,
+            first_comment_status=first_comment_status,
             published_at=published_at,
         )
 
@@ -283,8 +376,10 @@ class PublicationLedger:
                     INSERT INTO publication_ledger (
                         tweet_id, author_handle, tweet_created_at, tweet_text,
                         tweet_url, linkedin_post_urn, linkedin_asset_urn,
-                        commentary_text, status, error_message, curation_rationale, published_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        commentary_text, status, error_message, curation_rationale,
+                        source_type, source_url, article_title, first_comment_text,
+                        first_comment_urn, first_comment_status, published_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(tweet_id) DO UPDATE SET
                         status = excluded.status,
                         linkedin_post_urn = excluded.linkedin_post_urn,
@@ -292,6 +387,12 @@ class PublicationLedger:
                         commentary_text = excluded.commentary_text,
                         error_message = excluded.error_message,
                         curation_rationale = excluded.curation_rationale,
+                        source_type = excluded.source_type,
+                        source_url = excluded.source_url,
+                        article_title = excluded.article_title,
+                        first_comment_text = excluded.first_comment_text,
+                        first_comment_urn = excluded.first_comment_urn,
+                        first_comment_status = excluded.first_comment_status,
                         published_at = excluded.published_at
                       WHERE publication_ledger.status != ?
                     """,
@@ -307,6 +408,12 @@ class PublicationLedger:
                         entry.status,
                         entry.error_message,
                         entry.curation_rationale,
+                        entry.source_type,
+                        entry.source_url,
+                        entry.article_title,
+                        entry.first_comment_text,
+                        entry.first_comment_urn,
+                        entry.first_comment_status,
                         entry.published_at,
                         PUBLISHED,
                     ),

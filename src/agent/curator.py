@@ -19,6 +19,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from src.agent.context import PipelineContext
 from src.agent.state import (
+    KEY_CANDIDATE_ITEMS,
     KEY_CANDIDATE_TWEETS,
     KEY_CURATION_RATIONALE,
     KEY_CURATOR_DECISION,
@@ -26,7 +27,9 @@ from src.agent.state import (
     KEY_ERROR,
     KEY_EXECUTION_STATUS,
     KEY_RUNNER_UP_TWEETS,
+    KEY_SELECTED_ITEM,
     KEY_SELECTED_TWEET,
+    KEY_TARGET_TWEET_ID,
     STATUS_FAILED,
     STATUS_NO_NEW_TWEETS,
     STATUS_NO_QUALIFIED_CANDIDATE,
@@ -42,12 +45,13 @@ DEFAULT_CURATOR_MODEL = "gemini-3.8-flash"
 
 
 class CandidateEvaluation(BaseModel):
-    """Evaluation summary for an individual candidate tweet."""
+    """Evaluation summary for an individual candidate item (tweet or news article)."""
 
     model_config = ConfigDict(extra="ignore")
 
-    tweet_id: str
-    author_handle: str
+    candidate_id: str | None = None
+    tweet_id: str | None = None
+    author_or_source: str = ""
     relevance_score: int = Field(
         ge=0, le=10, description="Alignment with audience and topics (0-10)"
     )
@@ -60,19 +64,27 @@ class CuratorDecision(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
     status: Literal["SELECTED", "NO_QUALIFIED_CANDIDATE"]
+    selected_candidate_id: str | None = Field(
+        default=None, description="ID of chosen winning candidate"
+    )
     selected_tweet_id: str | None = Field(
-        default=None, description="ID of chosen winning tweet"
+        default=None, description="ID of chosen winning tweet (for backward compatibility)"
     )
     selection_rationale: str = Field(
-        description="Detailed comparative justification for why this tweet was chosen"
+        description="Detailed comparative justification for why this item was chosen"
     )
     ranked_runner_up_ids: list[str] = Field(
         default_factory=list,
-        description="IDs of qualifying runner-up tweets in preference order",
+        description="IDs of qualifying runner-up candidates in preference order",
     )
     candidate_evaluations: list[CandidateEvaluation] = Field(
-        default_factory=list, description="Individual tweet assessments"
+        default_factory=list, description="Individual candidate assessments"
     )
+
+    @property
+    def winner_id(self) -> str | None:
+        """Return the winning ID regardless of whether candidate_id or tweet_id was populated."""
+        return self.selected_candidate_id or self.selected_tweet_id
 
 
 @dataclass(slots=True)
@@ -100,21 +112,28 @@ async def default_gemini_evaluator(
 
     candidates_summary = [
         {
-            "tweet_id": str(c.get("tweet_id", "")),
-            "author_handle": str(c.get("author_handle", "")),
-            "created_at": str(c.get("created_at", "")),
-            "text": str(c.get("text", "")),
-            "permalink": str(c.get("permalink", "")),
+            "id": str(c.get("id") or c.get("tweet_id", "")),
+            "source_type": str(c.get("source_type") or "tweet"),
+            "author_or_source": str(
+                c.get("author_or_source") or c.get("author_handle", "")
+            ),
+            "title": str(c.get("title") or c.get("text", "")),
+            "published_at": str(c.get("published_at") or c.get("created_at", "")),
+            "summary": str(c.get("summary") or c.get("text", "")),
+            "url": str(c.get("url") or c.get("permalink", "")),
         }
         for c in candidates
     ]
 
     prompt = (
-        "Evaluate the following candidate tweets comparatively. Score each tweet "
-        "and determine if any candidate qualifies (must score >= 6/10). If none qualify, "
-        "set status='NO_QUALIFIED_CANDIDATE'. Otherwise set status='SELECTED', pick the top "
-        "tweet, and rank the runner-ups.\n\n"
-        f"Candidate Tweets:\n{json.dumps(candidates_summary, indent=2)}"
+        "Evaluate the following candidate content items (tweets and news articles) comparatively. "
+        "Score each candidate and determine if any candidate qualifies (must score >= 6/10). "
+        "Evaluate with zero channel bias: compare based purely on substance, strategic alignment, "
+        "and resonance with software engineers and founders. If none qualify, "
+        "set status='NO_QUALIFIED_CANDIDATE'. Otherwise set status='SELECTED', pick the single top "
+        "candidate id in selected_candidate_id, provide a comparative selection_rationale, "
+        "and rank the runner-up candidate IDs.\n\n"
+        f"Candidate Items:\n{json.dumps(candidates_summary, indent=2)}"
     )
 
     response = await client.aio.models.generate_content(
@@ -133,8 +152,31 @@ async def default_gemini_evaluator(
     return CuratorDecision.model_validate(data)
 
 
+def _extract_tweet_dict(selected_candidate: dict[str, Any]) -> dict[str, Any] | None:
+    """Extract or normalize a tweet dictionary for backward compatibility."""
+    is_tweet = (
+        selected_candidate.get("source_type") == "tweet"
+        or (
+            "tweet_id" in selected_candidate
+            and selected_candidate.get("source_type") != "news_article"
+        )
+    )
+    if not is_tweet:
+        return None
+    raw = selected_candidate.get("raw_payload")
+    if isinstance(raw, dict) and "tweet_id" in raw:
+        tweet_dict = to_state_dict(raw)
+    else:
+        tweet_dict = to_state_dict(selected_candidate)
+    if "tweet_id" not in tweet_dict and "id" in tweet_dict:
+        tweet_dict["tweet_id"] = tweet_dict["id"]
+    if "id" not in tweet_dict and "tweet_id" in tweet_dict:
+        tweet_dict["id"] = tweet_dict["tweet_id"]
+    return tweet_dict
+
+
 class TweetCuratorAgent(BaseAgent):
-    """ADK sequential agent that evaluates candidate tweets and selects the top pick."""
+    """ADK sequential agent that evaluates candidate tweets and articles to select the top pick."""
 
     context: PipelineContext | None = None
     decision_evaluator: (
@@ -162,14 +204,17 @@ class TweetCuratorAgent(BaseAgent):
             logger.debug("Upstream stage failed; curator step is a clean no-op.")
             return {}
 
-        raw_candidates = state.get(KEY_CANDIDATE_TWEETS) or state.get(
-            KEY_ELIGIBLE_TWEETS
+        raw_candidates = (
+            state.get(KEY_CANDIDATE_ITEMS)
+            or state.get(KEY_CANDIDATE_TWEETS)
+            or state.get(KEY_ELIGIBLE_TWEETS)
         )
         candidates = list(raw_candidates or [])
 
         if not candidates:
-            logger.info("No candidate tweets available for curation.")
+            logger.info("No candidate items available for curation.")
             return {
+                KEY_SELECTED_ITEM: None,
                 KEY_SELECTED_TWEET: None,
                 KEY_CURATOR_DECISION: None,
                 KEY_CURATION_RATIONALE: "",
@@ -206,16 +251,48 @@ class TweetCuratorAgent(BaseAgent):
                 KEY_EXECUTION_STATUS: STATUS_FAILED,
             }
 
+        candidate_map = {
+            str(c.get("id") or c.get("tweet_id", "")): c for c in candidates
+        }
+
+        target_tweet_id = state.get(KEY_TARGET_TWEET_ID)
+        if target_tweet_id:
+            selected_candidate = candidate_map.get(str(target_tweet_id)) or candidates[0]
+            selected_tweet_dict = _extract_tweet_dict(selected_candidate)
+
+            rationale = decision.selection_rationale
+            if (
+                decision.candidate_evaluations
+                and decision.candidate_evaluations[0].evaluation_notes
+            ):
+                notes = decision.candidate_evaluations[0].evaluation_notes
+                if notes not in rationale:
+                    rationale = f"{notes} ({rationale})"
+            logger.info(
+                "Operator targeted item %s from %s (curator evaluation: %s).",
+                selected_candidate.get("id") or selected_candidate.get("tweet_id"),
+                selected_candidate.get("author_or_source") or selected_candidate.get("author_handle"),
+                decision.status,
+            )
+            return {
+                KEY_SELECTED_ITEM: to_state_dict(selected_candidate),
+                KEY_SELECTED_TWEET: selected_tweet_dict,
+                KEY_CURATOR_DECISION: to_state_dict(decision),
+                KEY_CURATION_RATIONALE: rationale,
+                KEY_RUNNER_UP_TWEETS: [],
+            }
+
         if (
             decision.status == "NO_QUALIFIED_CANDIDATE"
-            or not decision.selected_tweet_id
+            or not decision.winner_id
         ):
             logger.info(
-                "Curator evaluated %d tweets: NO_QUALIFIED_CANDIDATE. Rationale: %s",
+                "Curator evaluated %d candidates: NO_QUALIFIED_CANDIDATE. Rationale: %s",
                 len(candidates),
                 decision.selection_rationale,
             )
             return {
+                KEY_SELECTED_ITEM: None,
                 KEY_SELECTED_TWEET: None,
                 KEY_CURATOR_DECISION: to_state_dict(decision),
                 KEY_CURATION_RATIONALE: decision.selection_rationale,
@@ -223,30 +300,30 @@ class TweetCuratorAgent(BaseAgent):
                 KEY_EXECUTION_STATUS: STATUS_NO_QUALIFIED_CANDIDATE,
             }
 
-        selected_id = str(decision.selected_tweet_id)
-        selected_tweet = next(
-            (c for c in candidates if str(c.get("tweet_id", "")) == selected_id),
-            candidates[0],
-        )
+        selected_id = str(decision.winner_id)
+        selected_candidate = candidate_map.get(selected_id) or candidates[0]
 
         runner_up_ids = [str(uid) for uid in decision.ranked_runner_up_ids]
-        candidate_map = {str(c.get("tweet_id", "")): c for c in candidates}
-        runner_ups = [
-            candidate_map[uid]
-            for uid in runner_up_ids
-            if uid in candidate_map and uid != selected_id
-        ]
+        runner_ups = []
+        for uid in runner_up_ids:
+            if uid in candidate_map and uid != selected_id:
+                cand = candidate_map[uid]
+                tweet_dict = _extract_tweet_dict(cand)
+                runner_ups.append(tweet_dict if tweet_dict else cand)
+
+        selected_tweet_dict = _extract_tweet_dict(selected_candidate)
 
         logger.info(
-            "Curator selected tweet %s by @%s (out of %d candidates, %d runner-ups).",
-            selected_tweet.get("tweet_id"),
-            selected_tweet.get("author_handle"),
+            "Curator selected %s from %s (out of %d candidates, %d runner-ups).",
+            selected_candidate.get("id") or selected_candidate.get("tweet_id"),
+            selected_candidate.get("author_or_source") or selected_candidate.get("author_handle"),
             len(candidates),
             len(runner_ups),
         )
 
         return {
-            KEY_SELECTED_TWEET: to_state_dict(selected_tweet),
+            KEY_SELECTED_ITEM: to_state_dict(selected_candidate),
+            KEY_SELECTED_TWEET: selected_tweet_dict,
             KEY_CURATOR_DECISION: to_state_dict(decision),
             KEY_CURATION_RATIONALE: decision.selection_rationale,
             KEY_RUNNER_UP_TWEETS: [to_state_dict(t) for t in runner_ups],

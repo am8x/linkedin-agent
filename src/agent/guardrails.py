@@ -37,6 +37,7 @@ EMOJI_PATTERN = re.compile(
 )
 HASHTAG_PATTERN = re.compile(r"#\w+")
 EM_DASH_PATTERN = re.compile(r"—|--")
+URL_PATTERN = re.compile(r"https?://\S+|www\.\S+", re.IGNORECASE)
 
 
 @dataclass(slots=True, frozen=True)
@@ -167,6 +168,16 @@ class StyleGuardrail:
                 GuardrailViolation(
                     violation_type="EM_DASH",
                     detail="Em dashes ('—') or double hyphens ('--') are prohibited. Use commas or separate sentences.",
+                )
+            )
+
+        # 7. Outbound URL check
+        urls = URL_PATTERN.findall(stripped)
+        if urls:
+            violations.append(
+                GuardrailViolation(
+                    violation_type="OUTBOUND_URL",
+                    detail=f"Outbound URLs are prohibited in post body: found '{urls[0]}'. Place source links in the first comment.",
                 )
             )
 

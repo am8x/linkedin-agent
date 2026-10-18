@@ -24,16 +24,21 @@ from google.adk.events import Event, EventActions
 
 from src.agent.state import (
     KEY_AUTO_PUBLISH,
+    KEY_CANDIDATE_ITEMS,
     KEY_CANDIDATE_TWEETS,
     KEY_COMMENTARY,
     KEY_CURATION_RATIONALE,
     KEY_DRY_RUN,
     KEY_ERROR,
     KEY_EXECUTION_STATUS,
+    KEY_EXTRACTED_ARTICLE,
+    KEY_FIRST_COMMENT,
     KEY_MONITORED_ACCOUNTS,
+    KEY_MONITORED_FEEDS,
     KEY_PUBLICATION_RECORD,
     KEY_RENDERED_ASSET,
     KEY_RUNNER_UP_TWEETS,
+    KEY_SELECTED_ITEM,
     KEY_SELECTED_TWEET,
     STATUS_DRY_RUN,
     STATUS_FAILED,
@@ -64,28 +69,78 @@ PUBLISHER_AGENT_NAME = "linkedin_publisher_agent"
 def preview_from_state(state: Any) -> dict[str, Any]:
     """Extract the human-facing preview payload from session state."""
     tweet = state.get(KEY_SELECTED_TWEET) or {}
+    selected_item = state.get(KEY_SELECTED_ITEM) or {}
+    extracted = state.get(KEY_EXTRACTED_ARTICLE) or {}
+    first_comment = state.get(KEY_FIRST_COMMENT) or {}
     asset = state.get(KEY_RENDERED_ASSET) or {}
     commentary = state.get(KEY_COMMENTARY) or {}
-    candidates = state.get(KEY_CANDIDATE_TWEETS) or []
-    monitored = state.get(KEY_MONITORED_ACCOUNTS) or []
+    candidates = (
+        state.get(KEY_CANDIDATE_ITEMS)
+        or state.get(KEY_CANDIDATE_TWEETS)
+        or []
+    )
+    monitored = (
+        state.get(KEY_MONITORED_FEEDS)
+        or state.get(KEY_MONITORED_ACCOUNTS)
+        or []
+    )
     rationale = str(state.get(KEY_CURATION_RATIONALE) or "")
     runner_ups = state.get(KEY_RUNNER_UP_TWEETS) or []
+
+    is_news_article = (
+        selected_item.get("source_type") == "news_article"
+        or bool(extracted)
+    )
+
+    article_title = str(
+        extracted.get("title")
+        or selected_item.get("title")
+        or ""
+    )
+    publication_name = str(
+        extracted.get("publication_name")
+        or selected_item.get("author_or_source")
+        or selected_item.get("publication_name")
+        or ""
+    )
+    permalink = str(
+        extracted.get("url")
+        or selected_item.get("url")
+        or selected_item.get("canonical_url")
+        or tweet.get("permalink")
+        or ""
+    )
+    item_id = str(
+        selected_item.get("id")
+        or tweet.get("tweet_id")
+        or ""
+    )
+
     return {
         "tweet": tweet,
+        "selected_item": selected_item,
         "asset": asset,
         "commentary": commentary,
         "commentary_text": commentary.get("text", ""),
         "image_path": asset.get("file_path", ""),
-        "permalink": tweet.get("permalink", ""),
-        "author_handle": tweet.get("author_handle", ""),
-        "author_name": tweet.get("author_name", ""),
-        "tweet_text": tweet.get("text", ""),
-        "tweet_id": str(tweet.get("tweet_id", "")),
-        "created_at": str(tweet.get("created_at", "")),
+        "permalink": permalink,
+        "author_handle": tweet.get("author_handle", "") or publication_name,
+        "author_name": tweet.get("author_name", "") or publication_name,
+        "tweet_text": tweet.get("text", "") or selected_item.get("summary", ""),
+        "tweet_id": item_id,
+        "created_at": str(
+            tweet.get("created_at")
+            or selected_item.get("published_at")
+            or ""
+        ),
         "candidate_pool_count": len(candidates),
         "monitored_accounts_count": len(monitored),
         "curator_rationale": rationale,
         "runner_up_tweets": runner_ups,
+        "is_news_article": is_news_article,
+        "article_title": article_title,
+        "publication_name": publication_name,
+        "first_comment": first_comment.get("formatted_text", ""),
     }
 
 
@@ -99,27 +154,41 @@ def render_editorial_review(preview: dict[str, Any], console: Any = None) -> str
 
     pool_count = preview.get("candidate_pool_count", 0)
     acct_count = preview.get("monitored_accounts_count", 0)
+    is_news = preview.get("is_news_article")
     lines.append("[CANDIDATE POOL]")
-    lines.append(
-        f"  Total unposted tweets evaluated: {pool_count} across {acct_count} monitored accounts."
-    )
+    if is_news:
+        lines.append(
+            f"  Total unposted candidate items evaluated: {pool_count} across monitored feeds/accounts."
+        )
+    else:
+        lines.append(
+            f"  Total unposted tweets evaluated: {pool_count} across {acct_count} monitored accounts."
+        )
     lines.append("")
 
-    author_handle = preview.get("author_handle", "")
-    if author_handle and not author_handle.startswith("@"):
-        author_handle = f"@{author_handle}"
-    tweet_id = preview.get("tweet_id", "")
-    created = preview.get("created_at", "")
-    tweet_text = preview.get("tweet_text", "")
-    permalink = preview.get("permalink", "")
+    if is_news:
+        lines.append("[CURATOR SELECTION - NEWS ARTICLE]")
+        lines.append(f"  Publication: {preview.get('publication_name')}")
+        lines.append(f"  Title:       {preview.get('article_title')}")
+        lines.append(f"  Item ID:     {preview.get('tweet_id')}")
+        lines.append(f"  Canonical:   {preview.get('permalink')}")
+        lines.append("")
+    else:
+        author_handle = preview.get("author_handle", "")
+        if author_handle and not author_handle.startswith("@"):
+            author_handle = f"@{author_handle}"
+        tweet_id = preview.get("tweet_id", "")
+        created = preview.get("created_at", "")
+        tweet_text = preview.get("tweet_text", "")
+        permalink = preview.get("permalink", "")
 
-    lines.append("[CURATOR SELECTION]")
-    lines.append(f"  Author:     {author_handle}")
-    lines.append(f"  Tweet ID:   {tweet_id}")
-    lines.append(f"  Created:    {created}")
-    lines.append(f"  Tweet Text: {tweet_text}")
-    lines.append(f"  Permalink:  {permalink}")
-    lines.append("")
+        lines.append("[CURATOR SELECTION]")
+        lines.append(f"  Author:     {author_handle}")
+        lines.append(f"  Tweet ID:   {tweet_id}")
+        lines.append(f"  Created:    {created}")
+        lines.append(f"  Tweet Text: {tweet_text}")
+        lines.append(f"  Permalink:  {permalink}")
+        lines.append("")
 
     lines.append("[CURATOR RATIONALE]")
     rationale = preview.get("curator_rationale") or "(No rationale provided)"
@@ -153,6 +222,13 @@ def render_editorial_review(preview: dict[str, Any], console: Any = None) -> str
     for line in comm_text.splitlines():
         lines.append(f"  {line}")
     lines.append("")
+
+    first_comment = preview.get("first_comment")
+    if first_comment:
+        lines.append("[STAGED FIRST COMMENT]")
+        for line in first_comment.splitlines():
+            lines.append(f"  {line}")
+        lines.append("")
 
     lines.append("-" * 80)
     lines.append("[ACTIONS]")
@@ -236,9 +312,9 @@ class LinkedInPublisherAgent(BaseAgent):
 
     # -- internals ----------------------------------------------------------
     async def _publish(self, state: Any) -> dict[str, Any]:
-        selected = state.get(KEY_SELECTED_TWEET)
+        selected = state.get(KEY_SELECTED_TWEET) or state.get(KEY_SELECTED_ITEM)
         if not selected:
-            logger.debug("No selected tweet; publication step is a clean no-op.")
+            logger.debug("No selected tweet or item; publication step is a clean no-op.")
             return {}
 
         asset = state.get(KEY_RENDERED_ASSET) or {}
@@ -262,7 +338,7 @@ class LinkedInPublisherAgent(BaseAgent):
 
         if not bool(state.get(KEY_AUTO_PUBLISH)):
             while True:
-                current_selected = state.get(KEY_SELECTED_TWEET) or {}
+                current_selected = state.get(KEY_SELECTED_TWEET) or state.get(KEY_SELECTED_ITEM) or {}
                 current_asset = state.get(KEY_RENDERED_ASSET) or {}
                 current_commentary = state.get(KEY_COMMENTARY) or {}
                 current_text = str(current_commentary.get("text") or "")
@@ -275,7 +351,7 @@ class LinkedInPublisherAgent(BaseAgent):
                         delta = self._handle_dry_run(entry)
                     else:
                         delta = await self._publish_now(
-                            entry, current_asset, current_text
+                            entry, current_asset, current_text, state=state
                         )
                     delta.update(
                         {
@@ -337,14 +413,32 @@ class LinkedInPublisherAgent(BaseAgent):
                         logger.warning("No runner-up candidate tweets available.")
                         continue
 
-                    next_tweet = runner_ups.pop(0)
-                    state[KEY_SELECTED_TWEET] = next_tweet
+                    next_candidate = runner_ups.pop(0)
                     state[KEY_RUNNER_UP_TWEETS] = runner_ups
-                    logger.info(
-                        "Promoted runner-up tweet %s by @%s to selected.",
-                        next_tweet.get("tweet_id"),
-                        next_tweet.get("author_handle"),
+
+                    is_tweet = (
+                        "tweet_id" in next_candidate
+                        or next_candidate.get("source_type") == "tweet"
                     )
+                    if is_tweet:
+                        state[KEY_SELECTED_TWEET] = next_candidate
+                        state[KEY_SELECTED_ITEM] = next_candidate
+                        state[KEY_EXTRACTED_ARTICLE] = None
+                        state[KEY_FIRST_COMMENT] = None
+                        logger.info(
+                            "Promoted runner-up tweet %s by @%s to selected.",
+                            next_candidate.get("tweet_id"),
+                            next_candidate.get("author_handle"),
+                        )
+                    else:
+                        state[KEY_SELECTED_ITEM] = next_candidate
+                        state[KEY_SELECTED_TWEET] = None
+                        state[KEY_EXTRACTED_ARTICLE] = None
+                        state[KEY_FIRST_COMMENT] = None
+                        logger.info(
+                            "Promoted runner-up article %s to selected.",
+                            next_candidate.get("id"),
+                        )
 
                     if self.capture_card is not None:
                         try:
@@ -365,7 +459,7 @@ class LinkedInPublisherAgent(BaseAgent):
                             )
                     continue
 
-        return await self._publish_now(entry, asset, commentary_text)
+        return await self._publish_now(entry, asset, commentary_text, state=state)
 
     # -- branches -----------------------------------------------------------
     def _handle_dry_run(self, entry: LedgerEntry) -> dict[str, Any]:
@@ -390,18 +484,24 @@ class LinkedInPublisherAgent(BaseAgent):
         entry: LedgerEntry,
         asset: dict[str, Any],
         commentary_text: str,
+        state: Any = None,
     ) -> dict[str, Any]:
         if self.ledger is not None:
             try:
                 self.ledger.claim(entry)
             except DuplicatePublicationError:
                 logger.info(
-                    "[SKIPPED] Tweet %s was already published; nothing to do.",
+                    "[SKIPPED] Item %s was already published; nothing to do.",
                     entry.tweet_id,
                 )
                 return {KEY_EXECUTION_STATUS: STATUS_SKIPPED, KEY_ERROR: None}
 
         client = self._resolve_client()
+        first_comment = (state or {}).get(KEY_FIRST_COMMENT)
+        first_comment_text: str | None = None
+        first_comment_status: str | None = None
+        first_comment_urn: str | None = None
+
         try:
             publisher = self._resolve_publisher(client)
             result: LinkedInPostResult = await publisher.publish(
@@ -409,9 +509,49 @@ class LinkedInPublisherAgent(BaseAgent):
                 image_path=asset.get("file_path"),
                 title=self.post_title,
             )
+
+            # Automated first-comment posting attempt while client is active
+            if first_comment and isinstance(first_comment, dict):
+                first_comment_text = first_comment.get("formatted_text")
+                if first_comment_text:
+                    first_comment_status = "STAGED_MANUAL"
+                    try:
+                        if hasattr(client, "create_comment"):
+                            comment_res = await client.create_comment(
+                                result.post_urn, first_comment_text
+                            )
+                            first_comment_urn = getattr(comment_res, "comment_urn", None)
+                            first_comment_status = "POSTED_API"
+                            logger.info(
+                                "[LinkedIn] Main post published successfully: %s",
+                                result.post_urn,
+                            )
+                            logger.info(
+                                "[LinkedIn] First comment posted successfully: %s",
+                                first_comment_urn,
+                            )
+                        else:
+                            logger.info(
+                                "[LinkedIn] Automated comment unavailable (client lacks create_comment)."
+                            )
+                    except Exception as exc:
+                        logger.warning("[LinkedIn] Automated comment unavailable: %s", exc)
+                        fallback_banner = (
+                            f"\n[LinkedIn] Main post published successfully: {result.post_urn}\n"
+                            "[LinkedIn] Automated comment unavailable (insufficient API permissions).\n"
+                            "[Action Required] Copy & paste this first comment to maximize post reach:\n"
+                            "--------------------------------------------------------------------------\n"
+                            f"{first_comment_text}\n"
+                            "--------------------------------------------------------------------------\n"
+                        )
+                        logger.info(fallback_banner)
+
+                    first_comment["comment_urn"] = first_comment_urn
+                    first_comment["status"] = first_comment_status
+
         except Exception as exc:
             message = (
-                f"LinkedIn publication failed for tweet {entry.tweet_id}: "
+                f"LinkedIn publication failed for item {entry.tweet_id}: "
                 f"{type(exc).__name__}: {exc}"
             )
             logger.error(message)
@@ -427,17 +567,21 @@ class LinkedInPublisherAgent(BaseAgent):
                 linkedin_asset_urn=result.asset_urn,
                 curation_rationale=entry.curation_rationale,
                 published_at=datetime.now(UTC).isoformat(),
+                first_comment_text=first_comment_text,
+                first_comment_status=first_comment_status,
+                first_comment_urn=first_comment_urn,
             )
 
         record = result.to_publication_record(
             tweet_id=entry.tweet_id,
             author_handle=entry.author_handle,
         )
-        logger.info("Published tweet %s as %s", entry.tweet_id, result.post_urn)
+        logger.info("Published item %s as %s", entry.tweet_id, result.post_urn)
         return {
             KEY_PUBLICATION_RECORD: to_state_dict(record),
             KEY_EXECUTION_STATUS: STATUS_SUCCESS,
             KEY_ERROR: None,
+            KEY_FIRST_COMMENT: to_state_dict(first_comment) if first_comment else None,
         }
 
     # -- helpers ------------------------------------------------------------
@@ -447,19 +591,75 @@ class LinkedInPublisherAgent(BaseAgent):
         commentary_text: str,
         state: Any = None,
     ) -> LedgerEntry:
+        state_dict = state if isinstance(state, dict) else {}
+        selected_item = state_dict.get(KEY_SELECTED_ITEM) or {}
+        extracted = state_dict.get(KEY_EXTRACTED_ARTICLE) or {}
+        first_comment = state_dict.get(KEY_FIRST_COMMENT) or {}
+
         rationale = (
-            str(state.get(KEY_CURATION_RATIONALE) or "")
-            if state is not None
+            str(state_dict.get(KEY_CURATION_RATIONALE) or "")
+            if state_dict
             else str(selected.get("curation_rationale") or "")
         )
+
+        is_article = (
+            selected_item.get("source_type") == "news_article"
+            or (bool(extracted) and not selected.get("tweet_id"))
+        )
+
+        source_type = "news_article" if is_article else "tweet"
+        source_url = (
+            extracted.get("url")
+            or selected_item.get("url")
+            or selected.get("permalink")
+            or ""
+        )
+        article_title = (
+            extracted.get("title")
+            or selected_item.get("title")
+            or None
+        )
+        tweet_id = str(
+            selected.get("tweet_id")
+            or selected_item.get("id")
+            or ""
+        )
+        author_handle = str(
+            selected.get("author_handle")
+            or selected_item.get("author_or_source")
+            or ""
+        )
+        tweet_created_at = str(
+            selected.get("created_at")
+            or selected_item.get("published_at")
+            or ""
+        )
+        tweet_text = str(
+            selected.get("text")
+            or selected_item.get("summary")
+            or selected_item.get("title")
+            or ""
+        )
+        tweet_url = str(
+            selected.get("permalink")
+            or source_url
+            or ""
+        )
+
         return LedgerEntry(
-            tweet_id=str(selected.get("tweet_id", "")),
-            author_handle=str(selected.get("author_handle", "")),
-            tweet_created_at=str(selected.get("created_at", "")),
-            tweet_text=str(selected.get("text", "")),
-            tweet_url=str(selected.get("permalink", "")),
+            tweet_id=tweet_id,
+            author_handle=author_handle,
+            tweet_created_at=tweet_created_at,
+            tweet_text=tweet_text,
+            tweet_url=tweet_url,
             commentary_text=commentary_text,
             curation_rationale=rationale or None,
+            source_type=source_type,
+            source_url=source_url or None,
+            article_title=article_title,
+            first_comment_text=first_comment.get("formatted_text"),
+            first_comment_status=first_comment.get("status"),
+            first_comment_urn=first_comment.get("comment_urn"),
         )
 
     def _resolve_client(self) -> Any:

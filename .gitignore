@@ -35,6 +35,8 @@ state/*.sqlite
 # Screenshots, Assets, and Media Outputs
 .assets/screenshots/*.png
 !.assets/screenshots/.gitkeep
+.assets/news_images/*
+!.assets/news_images/.gitkeep
 *.mp4
 *.webm
 

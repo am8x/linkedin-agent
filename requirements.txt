@@ -22,6 +22,10 @@ playwright>=1.40
 # Async HTTP client for the official LinkedIn REST v2 APIs
 httpx>=0.27
 
+# HTML parsing and boilerplate removal for RSS news article extraction
+beautifulsoup4>=4.12
+lxml>=5.0
+
 # Domain models and payload schema validation
 pydantic>=2.7,<3
 

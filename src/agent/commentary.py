@@ -35,11 +35,15 @@ from src.agent.state import (
     KEY_CURATION_RATIONALE,
     KEY_ERROR,
     KEY_EXECUTION_STATUS,
+    KEY_EXTRACTED_ARTICLE,
+    KEY_FIRST_COMMENT,
+    KEY_SELECTED_ITEM,
     KEY_SELECTED_TWEET,
     STATUS_FAILED,
 )
 from src.config import AgentConfig
 from src.logging import get_logger
+from src.news.models import CandidateSourceType, FirstCommentPayload
 
 logger = get_logger(__name__)
 
@@ -197,8 +201,10 @@ def build_prompt(
     *,
     curation_rationale: str | None = None,
     writer_prompt: str | None = None,
+    selected_item: dict[str, Any] | None = None,
+    extracted_article: dict[str, Any] | None = None,
 ) -> str:
-    """Compose the final instruction for a given tweet payload."""
+    """Compose the final instruction for a given tweet or article payload."""
     sections: list[str] = []
     if writer_prompt:
         sections.append(writer_prompt)
@@ -208,7 +214,57 @@ def build_prompt(
     if curation_rationale:
         sections.append(f"## Curator Selection Rationale\n{curation_rationale}")
 
-    if tweet:
+    is_article = (
+        (
+            selected_item is not None
+            and (
+                selected_item.get("source_type") == CandidateSourceType.NEWS_ARTICLE.value
+                or selected_item.get("source_type") == CandidateSourceType.NEWS_ARTICLE
+            )
+        )
+        or bool(extracted_article)
+    )
+
+    if is_article:
+        headline = (
+            (extracted_article and extracted_article.get("title"))
+            or (selected_item and selected_item.get("title"))
+            or ""
+        )
+        pub_name = (
+            (extracted_article and extracted_article.get("publication_name"))
+            or (selected_item and selected_item.get("author_or_source"))
+            or "the publication"
+        )
+        domain = (extracted_article and extracted_article.get("domain")) or ""
+        canonical_url = (
+            (extracted_article and extracted_article.get("url"))
+            or (selected_item and selected_item.get("url"))
+            or ""
+        )
+        full_text = (
+            (extracted_article and extracted_article.get("full_text"))
+            or (selected_item and selected_item.get("summary"))
+            or ""
+        )
+
+        sections.append(
+            "--- ARTICLE CONTEXT ---\n"
+            f"Headline: {headline}\n"
+            f"Publication: {pub_name}\n"
+            f"Domain: {domain}\n"
+            f"Canonical URL: {canonical_url}\n\n"
+            f"Article Body:\n{full_text}\n"
+            "--- END ARTICLE CONTEXT ---"
+        )
+        sections.append(
+            f"Ground your analysis in the specific findings or technical claims made in the article. "
+            f"Cite {pub_name} naturally in the text. "
+            "CRITICAL CONSTRAINT: Do NOT include any outbound URLs, hyperlinks, or website addresses in the post body text. The source link will be provided in the first comment. "
+            "Synthesize a structured micro-post following the 2-3 paragraph layout in the style guide. "
+            "Reply with the post body only. No preamble, zero quotes, zero hashtags, zero emojis, zero em dashes."
+        )
+    elif tweet:
         handle = tweet.get("author_handle", "unknown")
         name = tweet.get("author_name", handle)
         permalink = tweet.get("permalink", "")
@@ -241,7 +297,7 @@ def build_instruction_provider(
     *,
     context: PipelineContext | None = None,
 ) -> Callable[[ReadonlyContext], str]:
-    """Return an ADK ``InstructionProvider`` that renders the tweet and persona from state."""
+    """Return an ADK ``InstructionProvider`` that renders the candidate and persona from state."""
 
     def provider(context_ro: Any) -> str:
         state = getattr(context_ro, "state", None)
@@ -250,6 +306,8 @@ def build_instruction_provider(
         state = state or {}
 
         tweet = state.get(KEY_SELECTED_TWEET)
+        selected_item = state.get(KEY_SELECTED_ITEM)
+        extracted_article = state.get(KEY_EXTRACTED_ARTICLE)
         rationale = state.get(KEY_CURATION_RATIONALE)
         writer_prompt = context.writer_system_prompt if context is not None else None
         return build_prompt(
@@ -257,6 +315,8 @@ def build_instruction_provider(
             tweet if isinstance(tweet, dict) else None,
             curation_rationale=rationale if isinstance(rationale, str) else None,
             writer_prompt=writer_prompt,
+            selected_item=selected_item if isinstance(selected_item, dict) else None,
+            extracted_article=extracted_article if isinstance(extracted_article, dict) else None,
         )
 
     return provider
@@ -282,8 +342,8 @@ def _guard_without_selected_tweet(
 ) -> LlmResponse | None:
     """Skip the model call entirely when ingestion found nothing to comment on."""
     state = callback_context.state
-    if not state.get(KEY_SELECTED_TWEET):
-        logger.debug("No selected tweet; skipping Gemini synthesis.")
+    if not state.get(KEY_SELECTED_TWEET) and not state.get(KEY_SELECTED_ITEM):
+        logger.debug("No selected tweet or item; skipping Gemini synthesis.")
         return LlmResponse(
             content=types.Content(role="model", parts=[types.Part(text="")]),
         )
@@ -324,8 +384,8 @@ def _publish_commentary(
         logger.debug("Upstream stage failed; commentary step is a clean no-op.")
         return None
 
-    if not state.get(KEY_SELECTED_TWEET):
-        logger.debug("No selected tweet; commentary step is a clean no-op.")
+    if not state.get(KEY_SELECTED_TWEET) and not state.get(KEY_SELECTED_ITEM):
+        logger.debug("No selected tweet or item; commentary step is a clean no-op.")
         state[KEY_COMMENTARY] = None
         return None
 
@@ -363,6 +423,8 @@ def _publish_commentary(
 
     state[KEY_COMMENTARY] = commentary.model_dump(mode="json")
     state[KEY_ERROR] = None
+    _populate_first_comment_if_article(state)
+
     logger.info(
         "Synthesised %d-character commentary (grounded=%s, paragraphs=%d)",
         commentary.character_count,
@@ -370,6 +432,49 @@ def _publish_commentary(
         commentary.paragraph_count,
     )
     return None
+
+
+def _populate_first_comment_if_article(state: Any) -> None:
+    selected_item = state.get(KEY_SELECTED_ITEM) or {}
+    extracted_article = state.get(KEY_EXTRACTED_ARTICLE) or {}
+
+    source_type = selected_item.get("source_type")
+    is_article = (
+        source_type == CandidateSourceType.NEWS_ARTICLE.value
+        or source_type == CandidateSourceType.NEWS_ARTICLE
+        or bool(extracted_article)
+    )
+
+    if not is_article:
+        state[KEY_FIRST_COMMENT] = None
+        return
+
+    canonical_url = str(
+        extracted_article.get("url")
+        or selected_item.get("url")
+        or selected_item.get("canonical_url")
+        or selected_item.get("permalink")
+        or ""
+    )
+    pub_name = str(
+        extracted_article.get("publication_name")
+        or selected_item.get("author_or_source")
+        or selected_item.get("publication_name")
+        or "Source"
+    )
+
+    if canonical_url:
+        payload = FirstCommentPayload(
+            canonical_url=canonical_url,
+            publication_name=pub_name,
+            formatted_text=f"Source article ({pub_name}): {canonical_url}",
+            status="PENDING",
+            comment_urn=None,
+        )
+        state[KEY_FIRST_COMMENT] = payload.model_dump(mode="json")
+        logger.info("Staged first comment: %s", payload.formatted_text)
+    else:
+        state[KEY_FIRST_COMMENT] = None
 
 
 def _build_after_model_callback(

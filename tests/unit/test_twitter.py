@@ -459,6 +459,72 @@ class TestTimelineFetcher:
         result = FetchResult(tweets=[older, newer])
         assert [tweet.tweet_id for tweet in result.newest_first()] == ["2", "1"]
 
+    async def test_fetch_user_id_uses_cache(self, mocker: Any) -> None:
+        client = mocker.Mock()
+        client.get_user_by_screen_name = mocker.AsyncMock(
+            return_value=type("U", (), {"id": "42"})()
+        )
+        fetcher = TimelineFetcher(client)
+        id1 = await fetcher.fetch_user_id("sama")
+        id2 = await fetcher.fetch_user_id("@sama")
+        assert id1 == "42"
+        assert id2 == "42"
+        client.get_user_by_screen_name.assert_awaited_once_with("sama")
+
+    async def test_fetch_paces_requests_with_delay(self, mocker: Any) -> None:
+        client = mocker.Mock()
+        sleep_records: list[float] = []
+
+        async def fake_sleep(secs: float) -> None:
+            sleep_records.append(secs)
+
+        fetcher = TimelineFetcher(client, account_delay_seconds=2.5, sleeper=fake_sleep)
+        mocker.patch.object(
+            fetcher, "fetch_account", side_effect=[([], 0), ([], 0), ([], 0)]
+        )
+
+        result = await fetcher.fetch(["sama", "karpathy", "ylecun"])
+        assert result.ok is True
+        assert sleep_records == [2.5, 2.5]
+
+    async def test_fetch_skips_sleep_when_delay_is_zero(self, mocker: Any) -> None:
+        client = mocker.Mock()
+        sleep_records: list[float] = []
+
+        async def fake_sleep(secs: float) -> None:
+            sleep_records.append(secs)
+
+        fetcher = TimelineFetcher(client, account_delay_seconds=0.0, sleeper=fake_sleep)
+        mocker.patch.object(fetcher, "fetch_account", side_effect=[([], 0), ([], 0)])
+
+        result = await fetcher.fetch(["sama", "karpathy"])
+        assert result.ok is True
+        assert sleep_records == []
+
+    async def test_fetch_account_retries_transient_rate_limit(
+        self, mocker: Any
+    ) -> None:
+        client = mocker.Mock()
+        sleep_records: list[float] = []
+
+        async def fake_sleep(secs: float) -> None:
+            sleep_records.append(secs)
+
+        fetcher = TimelineFetcher(client, sleeper=fake_sleep)
+
+        rate_limit_err = RuntimeError("429 TooManyRequests: Rate limit exceeded")
+        success_result = ([make_tweet(tweet_id="101")], 0)
+        mocker.patch.object(
+            fetcher,
+            "_fetch_account_direct",
+            side_effect=[rate_limit_err, success_result],
+        )
+
+        tweets, skipped = await fetcher.fetch_account("sama")
+        assert len(tweets) == 1
+        assert tweets[0].tweet_id == "101"
+        assert sleep_records == [5.0]
+
 
 class TestBuildFetcher:
     def test_build_fetcher_propagates_config(self, mocker: Any) -> None:
@@ -466,9 +532,45 @@ class TestBuildFetcher:
         from src.twitter.fetcher import build_fetcher
 
         config = TwitterConfig(
-            accounts=["sama"], lookback_hours=6, max_tweets_per_account=5
+            accounts=["sama"],
+            lookback_hours=6,
+            max_tweets_per_account=5,
+            account_delay_seconds=3.5,
         )
         fetcher = build_fetcher(mocker.Mock(), config)
         assert fetcher.lookback_hours == 6
         assert fetcher.max_tweets_per_account == 5
         assert fetcher.exclude_replies is True
+        assert fetcher.account_delay_seconds == 3.5
+
+    async def test_fetch_tweet_by_id_success(self, mocker: Any) -> None:
+        client = mocker.Mock()
+        mock_raw = RawTweet(
+            tweet_id="2111661115117900177",
+            text="aurora models spotted",
+            handle="chetaslua",
+            name="Chetas",
+        )
+        client.get_tweet_by_id = mocker.AsyncMock(return_value=mock_raw)
+
+        fetcher = TimelineFetcher(client)
+        tweet = await fetcher.fetch_tweet_by_id("2111661115117900177")
+        assert tweet.tweet_id == "2111661115117900177"
+        assert tweet.author_handle == "chetaslua"
+        assert tweet.text == "aurora models spotted"
+
+    async def test_fetch_tweet_by_id_not_found(self, mocker: Any) -> None:
+        client = mocker.Mock()
+        client.get_tweet_by_id = mocker.AsyncMock(return_value=None)
+        fetcher = TimelineFetcher(client)
+        with pytest.raises(TimelineFetchError, match="not found"):
+            await fetcher.fetch_tweet_by_id("99999")
+
+    async def test_fetch_tweet_by_id_parse_failure(self, mocker: Any) -> None:
+        client = mocker.Mock()
+        mock_raw = mocker.Mock()
+        mock_raw.id = ""  # causes to_source_tweet to return None
+        client.get_tweet_by_id = mocker.AsyncMock(return_value=mock_raw)
+        fetcher = TimelineFetcher(client)
+        with pytest.raises(TimelineFetchError, match="Could not parse tweet"):
+            await fetcher.fetch_tweet_by_id("invalid")

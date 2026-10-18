@@ -32,12 +32,17 @@ STATUS_FAILED: ExecutionStatus = "FAILED"
 
 # State keys ---------------------------------------------------------------
 KEY_MONITORED_ACCOUNTS = "monitored_accounts"
+KEY_MONITORED_FEEDS = "monitored_feeds"
 KEY_LOOKBACK_HOURS = "lookback_hours"
 KEY_DRY_RUN = "dry_run"
 KEY_AUTO_PUBLISH = "auto_publish"
 KEY_CANDIDATE_TWEETS = "candidate_tweets"
 KEY_ELIGIBLE_TWEETS = "eligible_tweets"
+KEY_CANDIDATE_ITEMS = "candidate_items"
 KEY_SELECTED_TWEET = "selected_tweet"
+KEY_SELECTED_ITEM = "selected_item"
+KEY_EXTRACTED_ARTICLE = "extracted_article"
+KEY_FIRST_COMMENT = "first_comment"
 KEY_CURATOR_DECISION = "curator_decision"
 KEY_CURATION_RATIONALE = "curation_rationale"
 KEY_RUNNER_UP_TWEETS = "runner_up_tweets"
@@ -46,17 +51,24 @@ KEY_COMMENTARY = "commentary"
 KEY_PUBLICATION_RECORD = "publication_record"
 KEY_EXECUTION_STATUS = "execution_status"
 KEY_ERROR = "error"
+KEY_TARGET_TWEET_ID = "target_tweet_id"
 
 # Derive the typed keys directly from the TypedDict contract so the two can
 # never drift apart.
 PipelineSessionStateKeys: tuple[str, ...] = (
     "monitored_accounts",
+    "monitored_feeds",
     "lookback_hours",
     "dry_run",
     "auto_publish",
+    "target_tweet_id",
     "candidate_tweets",
     "eligible_tweets",
+    "candidate_items",
     "selected_tweet",
+    "selected_item",
+    "extracted_article",
+    "first_comment",
     "curator_decision",
     "curation_rationale",
     "runner_up_tweets",
@@ -79,25 +91,31 @@ class PipelineSessionState(TypedDict, total=False):
 
     # Stage 0: input configuration
     monitored_accounts: list[str]
+    monitored_feeds: list[dict[str, Any]]
     lookback_hours: int
     dry_run: bool
     auto_publish: bool
+    target_tweet_id: str | None
 
     # Stage 1: ingestion & filtering output
     candidate_tweets: list[dict[str, Any]]
     eligible_tweets: list[dict[str, Any]]
+    candidate_items: list[dict[str, Any]]
     selected_tweet: dict[str, Any] | None
+    selected_item: dict[str, Any] | None
 
     # Stage 1.5: curation output
     curator_decision: dict[str, Any] | None
     curation_rationale: str
     runner_up_tweets: list[dict[str, Any]]
 
-    # Stage 2: visual card rendering output
+    # Stage 2: article extraction & visual card rendering output
+    extracted_article: dict[str, Any] | None
     rendered_asset: dict[str, Any] | None
 
     # Stage 3: commentary synthesis output
     commentary: dict[str, Any] | None
+    first_comment: dict[str, Any] | None
 
     # Stage 4: publication & persistence output
     publication_record: dict[str, Any] | None
@@ -108,19 +126,27 @@ class PipelineSessionState(TypedDict, total=False):
 def new_session_state(
     monitored_accounts: list[str],
     *,
+    monitored_feeds: list[dict[str, Any]] | None = None,
     lookback_hours: int = 12,
     dry_run: bool = False,
     auto_publish: bool = False,
+    target_tweet_id: str | None = None,
 ) -> PipelineSessionState:
     """Build the initial state dictionary handed to the ADK runner."""
     return PipelineSessionState(
         monitored_accounts=list(monitored_accounts),
+        monitored_feeds=list(monitored_feeds) if monitored_feeds is not None else [],
         lookback_hours=lookback_hours,
         dry_run=dry_run,
         auto_publish=auto_publish,
+        target_tweet_id=target_tweet_id,
         candidate_tweets=[],
         eligible_tweets=[],
+        candidate_items=[],
         selected_tweet=None,
+        selected_item=None,
+        extracted_article=None,
+        first_comment=None,
         curator_decision=None,
         curation_rationale="",
         runner_up_tweets=[],
@@ -164,6 +190,7 @@ class PipelineError(RuntimeError):
 __all__ = [
     "ExecutionStatus",
     "KEY_AUTO_PUBLISH",
+    "KEY_CANDIDATE_ITEMS",
     "KEY_CANDIDATE_TWEETS",
     "KEY_COMMENTARY",
     "KEY_CURATION_RATIONALE",
@@ -172,12 +199,17 @@ __all__ = [
     "KEY_ELIGIBLE_TWEETS",
     "KEY_ERROR",
     "KEY_EXECUTION_STATUS",
+    "KEY_EXTRACTED_ARTICLE",
+    "KEY_FIRST_COMMENT",
     "KEY_LOOKBACK_HOURS",
     "KEY_MONITORED_ACCOUNTS",
+    "KEY_MONITORED_FEEDS",
     "KEY_PUBLICATION_RECORD",
     "KEY_RENDERED_ASSET",
     "KEY_RUNNER_UP_TWEETS",
+    "KEY_SELECTED_ITEM",
     "KEY_SELECTED_TWEET",
+    "KEY_TARGET_TWEET_ID",
     "PipelineError",
     "PipelineSessionState",
     "PipelineSessionStateKeys",

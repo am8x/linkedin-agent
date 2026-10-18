@@ -18,6 +18,7 @@ from src.agent.state import (
     KEY_EXECUTION_STATUS,
     KEY_RUNNER_UP_TWEETS,
     KEY_SELECTED_TWEET,
+    KEY_TARGET_TWEET_ID,
     STATUS_NO_NEW_TWEETS,
     STATUS_NO_QUALIFIED_CANDIDATE,
 )
@@ -222,4 +223,42 @@ class TestTweetCuratorAgent:
         evaluator_mock.assert_not_called()
         assert delta[KEY_EXECUTION_STATUS] == STATUS_NO_NEW_TWEETS
         assert delta[KEY_SELECTED_TWEET] is None
+        assert delta[KEY_RUNNER_UP_TWEETS] == []
+
+    @pytest.mark.asyncio
+    async def test_target_tweet_retained_regardless_of_curator_score(
+        self, sample_context
+    ) -> None:
+        tweet = make_tweet("401", "chetaslua", "model leaks spotted")
+        evaluator_mock = AsyncMock(
+            return_value=CuratorDecision(
+                status="NO_QUALIFIED_CANDIDATE",
+                selected_tweet_id=None,
+                selection_rationale="Score 1/10: leak rumor lacking engineering substance.",
+                ranked_runner_up_ids=[],
+                candidate_evaluations=[
+                    CandidateEvaluation(
+                        tweet_id="401",
+                        author_handle="chetaslua",
+                        relevance_score=1,
+                        evaluation_notes="Unverified model leak rumor.",
+                    )
+                ],
+            )
+        )
+        agent = create_curator_agent(
+            context=sample_context,
+            decision_evaluator=evaluator_mock,
+        )
+
+        state = {
+            KEY_CANDIDATE_TWEETS: [tweet.model_dump(mode="json")],
+            KEY_TARGET_TWEET_ID: "401",
+        }
+        delta = await agent._curate(state)
+
+        # Target tweet must be preserved for operator review despite low score
+        assert delta[KEY_SELECTED_TWEET]["tweet_id"] == "401"
+        assert delta[KEY_CURATOR_DECISION]["status"] == "NO_QUALIFIED_CANDIDATE"
+        assert "Unverified model leak rumor." in delta[KEY_CURATION_RATIONALE]
         assert delta[KEY_RUNNER_UP_TWEETS] == []

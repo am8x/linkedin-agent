@@ -189,3 +189,44 @@ agent:
 
         opts = parse_args(["--context-dir", "cli/context"])
         assert opts.context_dir == Path("cli/context")
+
+    def test_account_delay_seconds_from_yaml_and_default(self, tmp_path: Path) -> None:
+        from src.config import TwitterConfig
+
+        tc = TwitterConfig(accounts=["sama"])
+        assert tc.account_delay_seconds == 2.0
+
+        yaml_path = tmp_path / "config.yaml"
+        yaml_path.write_text(
+            """
+twitter:
+  cookies_path: "cookies.json"
+  accounts: ["sama"]
+  account_delay_seconds: 4.5
+storage:
+  db_path: "state/sidekick.db"
+""",
+            encoding="utf-8",
+        )
+        config = load_config(yaml_path, load_env=False)
+        assert config.twitter.account_delay_seconds == 4.5
+
+    def test_account_delay_seconds_environment_override(self, tmp_path: Path) -> None:
+        yaml_path = tmp_path / "config.yaml"
+        yaml_path.write_text(
+            """
+twitter:
+  cookies_path: "cookies.json"
+  accounts: ["sama"]
+  account_delay_seconds: 2.0
+storage:
+  db_path: "state/sidekick.db"
+""",
+            encoding="utf-8",
+        )
+        config = load_config(
+            yaml_path,
+            load_env=False,
+            env={"SIDEKICK_ACCOUNT_DELAY_SECONDS": "5.5"},
+        )
+        assert config.twitter.account_delay_seconds == 5.5
