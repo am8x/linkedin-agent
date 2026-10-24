@@ -11,6 +11,8 @@ Only :mod:`src.linkedin.client` performs I/O; this module is pure schema.
 
 from __future__ import annotations
 
+import re
+import urllib.parse
 from datetime import UTC, datetime
 from typing import Any, Literal
 
@@ -40,6 +42,74 @@ class LinkedInAPIError(RuntimeError):
     def __init__(self, message: str, *, status_code: int | None = None) -> None:
         super().__init__(message)
         self.status_code = status_code
+
+
+# ---------------------------------------------------------------------------
+# Target post representation & normalisation
+# ---------------------------------------------------------------------------
+class LinkedInMediaAsset(BaseModel):
+    """Media asset attached to a LinkedIn post."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    asset_urn: str | None = Field(
+        default=None, description="e.g. urn:li:digitalmediaAsset:..."
+    )
+    media_url: str | None = Field(
+        default=None, description="Direct CDN download URL if available"
+    )
+    mime_type: str = Field(default="image/jpeg")
+    title: str | None = None
+    media_type: Literal["IMAGE", "DOCUMENT", "VIDEO", "NONE"] = "NONE"
+
+
+class LinkedInPostDetails(BaseModel):
+    """Normalized payload extracted from GET /rest/posts/{encodedUrn}."""
+
+    model_config = ConfigDict(extra="ignore")
+
+    post_urn: str = Field(
+        description="Normalized post URN, e.g. urn:li:activity:... or urn:li:ugcPost:..."
+    )
+    author_urn: str = Field(description="Author Person or Organization URN")
+    author_name: str = Field(default="", description="Resolved display name or handle")
+    commentary_text: str = Field(default="", description="Original post body text")
+    media: LinkedInMediaAsset = Field(default_factory=LinkedInMediaAsset)
+    raw_payload: dict[str, Any] = Field(
+        default_factory=dict, description="Raw API response for debugging"
+    )
+
+    @property
+    def has_image(self) -> bool:
+        return self.media.media_type == "IMAGE" and bool(
+            self.media.media_url or self.media.asset_urn
+        )
+
+
+def parse_linkedin_post_target(value: str) -> str:
+    """Extract canonical LinkedIn post URN from a URL or raw identifier."""
+    if not value or not value.strip():
+        raise ValueError("LinkedIn target post URL or URN cannot be empty.")
+    cleaned = urllib.parse.unquote(value.strip())
+    # Strip URL query and fragment
+    cleaned = cleaned.split("?")[0].split("#")[0].rstrip("/")
+
+    # 1. Match explicit URN pattern (urn:li:(activity|ugcPost|share):\d+)
+    urn_match = re.search(r"(urn:li:(?:activity|ugcPost|share):\d+)", cleaned)
+    if urn_match:
+        return urn_match.group(1)
+
+    # 2. Match activity-\d+ in post URLs
+    activity_match = re.search(r"activity-(\d+)", cleaned)
+    if activity_match:
+        return f"urn:li:activity:{activity_match.group(1)}"
+
+    # 3. Match pure digits
+    digits_match = re.search(r"\b(\d{10,25})\b", cleaned)
+    if digits_match:
+        return f"urn:li:activity:{digits_match.group(1)}"
+
+    raise ValueError(f"Unable to parse LinkedIn post URN from target: {value!r}")
 
 
 # ---------------------------------------------------------------------------
@@ -307,12 +377,10 @@ class CreateCommentResponse(BaseModel):
         response_headers: dict[str, str] | None = None,
     ) -> CreateCommentResponse:
         headers = {k.lower(): v for k, v in (response_headers or {}).items()}
-        urn = (
-            payload.get("id")
-            or payload.get("urn")
-            or headers.get("x-restli-id", "")
+        urn = payload.get("id") or payload.get("urn") or headers.get("x-restli-id", "")
+        return cls(
+            comment_urn=str(urn), raw=payload if isinstance(payload, dict) else {}
         )
-        return cls(comment_urn=str(urn), raw=payload if isinstance(payload, dict) else {})
 
 
 def ensure_person_urn(value: str) -> str:
@@ -330,6 +398,8 @@ __all__ = [
     "CreateCommentResponse",
     "LIFECYCLE_PUBLISHED",
     "LinkedInAPIError",
+    "LinkedInMediaAsset",
+    "LinkedInPostDetails",
     "LinkedInPostResult",
     "PublicationRecord",
     "PublicationStatus",
@@ -345,4 +415,5 @@ __all__ = [
     "UgcPostRequest",
     "UgcPostResponse",
     "ensure_person_urn",
+    "parse_linkedin_post_target",
 ]

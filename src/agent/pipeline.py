@@ -27,6 +27,7 @@ from src.agent.commentary import create_commentary_agent, synthesize_commentary
 from src.agent.context import ContextLoader
 from src.agent.curator import TweetCuratorAgent, create_curator_agent
 from src.agent.extraction import ArticleExtractionAgent, create_article_extraction_agent
+from src.agent.humanize import create_humanize_agent
 from src.agent.ingestion import TweetIngestionAgent, create_ingestion_agent
 from src.agent.publisher import LinkedInPublisherAgent, create_publisher_agent
 from src.agent.state import (
@@ -45,7 +46,7 @@ logger = get_logger(__name__)
 
 PIPELINE_APPLICATION_NAME = "linkedin_sidekick"
 PIPELINE_AGENT_NAME = "linkedin_sidekick_pipeline"
-PIPELINE_DESCRIPTION = "Sequential multi-source pipeline: ingest → curate → extract → capture → comment → publish."
+PIPELINE_DESCRIPTION = "Sequential multi-source pipeline: ingest → curate → extract → capture → comment → humanize → publish."
 DEFAULT_USER_ID = "sidekick"
 TRIGGER_MESSAGE = "Execute the LinkedIn Sidekick pipeline."
 
@@ -71,6 +72,8 @@ class PipelineComponents:
     context_loader: Any = None
     commentary_generator: Any = None
     capture_card: Any = None
+    humanize_browser_factory: Any = None
+    humanize_step: Any = None
 
 
 @dataclass
@@ -131,6 +134,8 @@ def build_pipeline(
     llm_model: Any = None,
     curator_evaluator: Any = None,
     context_loader: Any = None,
+    humanize_browser_factory: Any = None,
+    humanize_step: Any = None,
     name: str = PIPELINE_AGENT_NAME,
 ) -> SequentialAgent:
     """Assemble the six-stage ``SequentialAgent`` from configuration.
@@ -186,6 +191,16 @@ def build_pipeline(
         context_loader = (
             context_loader if context_loader is not None else components.context_loader
         )
+        humanize_browser_factory = (
+            humanize_browser_factory
+            if humanize_browser_factory is not None
+            else getattr(components, "humanize_browser_factory", None)
+        )
+        humanize_step = (
+            humanize_step
+            if humanize_step is not None
+            else getattr(components, "humanize_step", None)
+        )
         commentary_generator = components.commentary_generator
         capture_card = components.capture_card
     else:
@@ -223,6 +238,10 @@ def build_pipeline(
         model=llm_model,
         context=pipeline_context,
     )
+    humanize = create_humanize_agent(
+        getattr(config, "humanize", None),
+        browser_factory=humanize_browser_factory,
+    )
 
     async def _default_regenerate_commentary(state: Any) -> dict[str, Any]:
         sel = state.get(KEY_SELECTED_ITEM) or state.get(KEY_SELECTED_TWEET) or {}
@@ -242,6 +261,9 @@ def build_pipeline(
     async def _default_capture_card(state: Any) -> dict[str, Any]:
         return await capture._capture(state)
 
+    async def _default_humanize_step(state: Any) -> dict[str, Any]:
+        return await humanize._run_humanize(state)
+
     publisher: LinkedInPublisherAgent = create_publisher_agent(
         config,
         ledger=ledger,
@@ -251,6 +273,7 @@ def build_pipeline(
         confirm_prompt=confirm_prompt,
         commentary_generator=commentary_generator or _default_regenerate_commentary,
         capture_card=capture_card or _default_capture_card,
+        humanize_step=humanize_step or _default_humanize_step,
     )
 
     ctx = _suppress_sequential_deprecation()
@@ -258,7 +281,15 @@ def build_pipeline(
         pipeline = SequentialAgent(
             name=name,
             description=PIPELINE_DESCRIPTION,
-            sub_agents=[ingestion, curator, extraction, capture, commentary, publisher],
+            sub_agents=[
+                ingestion,
+                curator,
+                extraction,
+                capture,
+                commentary,
+                humanize,
+                publisher,
+            ],
         )
     finally:
         ctx.__exit__(None, None, None)
@@ -363,6 +394,9 @@ def build_initial_state(
     dry_run: bool = False,
     auto_publish: bool = False,
     target_tweet_id: str | None = None,
+    target_article_url: str | None = None,
+    target_image_caption: str | None = None,
+    target_image_credits: str | None = None,
 ) -> PipelineSessionState:
     """Compose the state dictionary seeded into a pipeline run."""
     resolved_accounts = (
@@ -393,6 +427,9 @@ def build_initial_state(
         dry_run=dry_run,
         auto_publish=auto_publish,
         target_tweet_id=target_tweet_id,
+        target_article_url=target_article_url,
+        target_image_caption=target_image_caption,
+        target_image_credits=target_image_credits,
     )
 
 

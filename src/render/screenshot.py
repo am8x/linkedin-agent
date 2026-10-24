@@ -310,12 +310,12 @@ class TweetCardRenderer:
 
         # Wait for the card *before* injecting CSS: styling a hidden or
         # half-hydrated tree would make the visibility wait unwinnable.
-        await self._wait_for_card(page, permalink)
+        await self._wait_for_card(page, permalink, tweet_id=tweet_id)
         await self._apply_styling(page)
         await self._settle(page)
 
         try:
-            locator = page.locator(TWEET_CARD_SELECTOR).first
+            locator = await self._resolve_target_locator(page, tweet_id)
             await locator.screenshot(path=str(target))
         except Exception as exc:
             raise CaptureError(
@@ -348,7 +348,39 @@ class TweetCardRenderer:
         except Exception as exc:  # pragma: no cover - browser dependent
             logger.debug("DOM injection failed, continuing: %s", exc)
 
-    async def _wait_for_card(self, page: Any, permalink: str) -> None:
+    async def _resolve_target_locator(self, page: Any, tweet_id: str) -> Any:
+        if tweet_id:
+            specific = page.locator(
+                f"article[data-testid='tweet']:has(a[href*='{tweet_id}'])"
+            ).first
+            try:
+                is_vis = specific.is_visible()
+                if hasattr(is_vis, "__await__"):
+                    is_vis = await is_vis
+                if is_vis:
+                    return specific
+            except Exception:
+                pass
+        return page.locator(TWEET_CARD_SELECTOR).first
+
+    async def _wait_for_card(
+        self, page: Any, permalink: str, tweet_id: str | None = None
+    ) -> None:
+        if tweet_id:
+            try:
+                target_locator = page.locator(
+                    f"article[data-testid='tweet']:has(a[href*='{tweet_id}'])"
+                ).first
+                wait_res = target_locator.wait_for(
+                    state="visible",
+                    timeout=self.config.timeout_ms,
+                )
+                if hasattr(wait_res, "__await__"):
+                    await wait_res
+                return
+            except Exception:
+                pass
+
         try:
             await page.locator(TWEET_CARD_SELECTOR).first.wait_for(
                 state="visible",

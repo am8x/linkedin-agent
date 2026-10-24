@@ -9,23 +9,23 @@ using a **sequential agent pipeline**.
 
 ## Architecture
 
-A single root `SequentialAgent` (`linkedin_sidekick_pipeline`) runs four stages in a
+A single root `SequentialAgent` (`linkedin_sidekick_pipeline`) runs seven stages in a
 fixed order over one shared `session.state` dictionary. Each stage reads only the
 keys it needs and writes its own result, so sub-agents never import one another:
 
 ```
-TweetIngestionAgent ─▶ CardCaptureAgent ─▶ CommentaryAgent ─▶ LinkedInPublisherAgent
-   discovery +            Playwright           Gemini 1–2         preview / approval /
-   12h filter +           dark-mode            sentence take      dry-run / UPLOAD + POST
-   ledger dedup           PNG card             (grounded)         + SQLite ledger write
+TweetIngestionAgent ─▶ TweetCuratorAgent ─▶ ArticleExtractionAgent ─▶ CardCaptureAgent ─▶ CommentaryAgent ─▶ HumanizeCommentaryAgent ─▶ LinkedInPublisherAgent
 ```
 
 | Stage | Agent | Kind | Responsibility |
 |---|---|---|---|
-| 1 | `TweetIngestionAgent` | custom `BaseAgent` | Fetch authored tweets for monitored accounts, drop anything older than `lookback_hours`, drop tweets already recorded `PUBLISHED`, select the newest survivor |
-| 2 | `CardCaptureAgent` | custom `BaseAgent` | Render the tweet permalink with headless Chromium, inject dark-mode + metric-hiding CSS, screenshot the card to disk |
-| 3 | `commentary_agent` | `LlmAgent` | Synthesize a 1–2 sentence, opinionated, hashtag-free takeaway (optionally grounded with Google Search) |
-| 4 | `LinkedInPublisherAgent` | custom `BaseAgent` | Dry-run, interactive `[y/N]` approval, or unattended publish; atomically claim the tweet in the ledger, register+upload the asset, create the UGC post |
+| 1 | `TweetIngestionAgent` | custom `BaseAgent` | Discover tweets and RSS news feeds, filter lookback window and deduplicate against ledger |
+| 2 | `TweetCuratorAgent` | custom `BaseAgent` | Polymorphic candidate scoring and selection across tweets and news articles |
+| 3 | `ArticleExtractionAgent` | custom `BaseAgent` | Extract clean full body text, lead images, and attribution credits for news articles |
+| 4 | `CardCaptureAgent` | custom `BaseAgent` | Render dark-mode visual cards (tweets or articles) into retina PNG assets with Playwright |
+| 5 | `commentary_agent` | `LlmAgent` | Synthesize flexible 1–3 paragraph opinionated commentary adhering to the persona style guide |
+| 6 | `HumanizeCommentaryAgent` | custom `BaseAgent` | Detect AI probability score and rewrite via HumanizeAI Playwright automation |
+| 7 | `LinkedInPublisherAgent` | custom `BaseAgent` | Dry-run, interactive CLI review (with recovery menu), auto-publish, and ledger recording |
 
 Deterministic steps are implemented as custom ADK `BaseAgent` subclasses so the
 whole pipeline is testable without network access; the generative step is a
@@ -91,6 +91,13 @@ Behavioural settings live in `config.yaml`; secrets come from the environment
 | `agent` | `model` | `gemini-3.8-flash` | Gemini model id |
 | `agent` | `max_sentences` | `2` | Commentary sentence budget |
 | `agent` | `grounding` | `true` | Google Search grounding toggle |
+| `humanize` | `enabled` | `true` | HumanizeAI rewriting pipeline toggle |
+| `humanize` | `headless` | `true` | Run Chromium in headless mode |
+| `humanize` | `timeout_seconds` | `30.0` | Playwright navigation timeout (5.0–120.0s) |
+| `humanize` | `auto_retry` | `true` | Automatic single retry on failure |
+| `humanize` | `retry_cooldown_seconds` | `2.0` | Cooldown period between retry attempts (0.5–10.0s) |
+| `humanize` | `detector_url` | `https://www.humanizeai.pro/detector` | AI probability detection endpoint |
+| `humanize` | `humanize_url` | `https://www.humanizeai.pro/` | AI humanization rewriting endpoint |
 | `scheduler` | `default_interval_minutes` | `60` | Fallback `--interval` value |
 | `storage` | `db_path` | `state/sidekick.db` | Publication ledger |
 | `logging` | `level` / `log_file` | `INFO` / `state/sidekick.log` | Structured logging |
@@ -119,6 +126,15 @@ python -m src.runner --interval 60
 
 # Publish a single run without prompting
 python -m src.runner --auto-publish
+
+# Target LinkedIn post commenting (multimodal ingestion, persona synthesis, anti-detection rewrite)
+python -m src.runner --comment-post https://www.linkedin.com/feed/update/urn:li:activity:7518646093870510081/
+
+# Safe dry-run for targeted commenting (no LinkedIn API calls)
+python -m src.runner --comment-post urn:li:activity:7518646093870510081 --dry-run
+
+# Comment and auto-publish immediately without interactive confirmation
+python -m src.runner --comment-post urn:li:activity:7518646093870510081 --yes
 ```
 
 | Flag | Default | Description |
@@ -127,6 +143,11 @@ python -m src.runner --auto-publish
 | `--interval MINUTES` | – | Run the continuous scheduler every `MINUTES` minutes (forces auto-publish) |
 | `--auto-publish` | off | Publish without the `[y/N]` confirmation prompt |
 | `--dry-run` | off | Discovery, capture, and commentary only — no LinkedIn publication |
+| `--tweet URL_OR_ID` | – | Process a specific tweet by URL or numeric ID |
+| `--article URL` | – | Process a specific news article by canonical URL |
+| `--comment-post URL_OR_URN` | – | Process a specific target LinkedIn post by URL or URN to synthesize and publish an inline comment (<250 chars) |
+| `--image-caption TEXT`| – | Select image matching caption/keyword from the article |
+| `--image-credits TEXT`| – | Custom attribution credits rendered on the card |
 | `--accounts HANDLES` | from config | Override monitored handles (comma-separated and/or repeatable) |
 | `--theme dark\|light` | from config | Override the screenshot theme |
 | `--no-grounding` | off | Disable Google Search grounding for this run |

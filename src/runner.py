@@ -30,6 +30,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from src.agent.commentary import synthesize_post_comment
+from src.agent.context import ContextLoader
+from src.agent.humanize import handle_comment_humanize_failure, humanize_commentary
+from src.agent.models import TargetCommentDraft
 from src.agent.pipeline import (
     PipelineComponents,
     PipelineRunResult,
@@ -38,13 +42,19 @@ from src.agent.pipeline import (
     run_pipeline,
 )
 from src.agent.state import (
+    KEY_AI_DETECTION_SCORE,
+    KEY_HUMANIZE_STATUS,
     STATUS_DRY_RUN,
+    STATUS_FAILED,
+    STATUS_FAILED_HUMANIZATION,
     STATUS_NO_NEW_TWEETS,
     STATUS_NO_QUALIFIED_CANDIDATE,
     STATUS_SKIPPED,
     STATUS_SUCCESS,
 )
 from src.config import AppConfig, ConfigurationError, load_config
+from src.linkedin.client import build_client
+from src.linkedin.models import LinkedInPostDetails, parse_linkedin_post_target
 from src.logging import get_logger, setup_logging
 from src.storage.ledger import PublicationLedger
 from src.twitter.compat import ensure_proactor_event_loop
@@ -81,6 +91,10 @@ class RunnerOptions:
     dry_run: bool = False
     accounts: list[str] | None = None
     tweet: str | None = None
+    article: str | None = None
+    comment_post: str | None = None
+    image_caption: str | None = None
+    image_credits: str | None = None
     theme: str | None = None
     grounding: bool | None = None
     config_path: Path | None = None
@@ -121,6 +135,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--auto-publish",
+        "--yes",
+        "-y",
+        dest="auto_publish",
         action="store_true",
         help="Publish without the interactive [y/N] confirmation prompt.",
     )
@@ -140,6 +157,39 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         metavar="URL_OR_ID",
         help="Process a specific tweet by URL or numeric ID instead of sweeping timelines.",
+    )
+    parser.add_argument(
+        "--article",
+        "--article-url",
+        dest="article",
+        type=str,
+        default=None,
+        metavar="URL",
+        help="Process a specific news article by URL instead of sweeping RSS feeds.",
+    )
+    parser.add_argument(
+        "--comment-post",
+        dest="comment_post",
+        type=str,
+        default=None,
+        metavar="URL_OR_URN",
+        help="Process a specific target LinkedIn post by URL or URN to synthesize and publish an inline comment.",
+    )
+    parser.add_argument(
+        "--image-caption",
+        dest="image_caption",
+        type=str,
+        default=None,
+        metavar="CAPTION",
+        help="Target image caption or keyword to pick from the article.",
+    )
+    parser.add_argument(
+        "--image-credits",
+        dest="image_credits",
+        type=str,
+        default=None,
+        metavar="CREDITS",
+        help="Target image credits/attribution to render on the news card.",
     )
     parser.add_argument(
         "--accounts",
@@ -226,6 +276,16 @@ def parse_args(argv: Sequence[str] | None = None) -> RunnerOptions:
         dry_run=bool(namespace.dry_run),
         accounts=parse_accounts(namespace.accounts),
         tweet=parse_tweet_target(namespace.tweet),
+        article=str(namespace.article).strip() if namespace.article else None,
+        comment_post=str(namespace.comment_post).strip()
+        if namespace.comment_post
+        else None,
+        image_caption=str(namespace.image_caption).strip()
+        if namespace.image_caption
+        else None,
+        image_credits=str(namespace.image_credits).strip()
+        if namespace.image_credits
+        else None,
         theme=namespace.theme,
         grounding=False if namespace.no_grounding else None,
         config_path=namespace.config,
@@ -322,19 +382,34 @@ class PipelineRunner:
         details = Table.grid(padding=(0, 1))
         details.add_column(style="bold cyan", no_wrap=True)
         details.add_column()
+        handle = preview.get("author_handle", "")
+        handle_suffix = f" (@{handle})" if handle else ""
         details.add_row(
             "Author",
-            f"{preview.get('author_name', '')} (@{preview.get('author_handle', '')})",
+            f"{preview.get('author_name', '')}{handle_suffix}",
         )
         details.add_row("Posted", str(tweet.get("created_at", "")))
         details.add_row("Permalink", str(preview.get("permalink", "")))
         details.add_row("Card", str(preview.get("image_path", "") or "<none>"))
+        if preview.get("humanize_status"):
+            score = preview.get("ai_detection_score")
+            score_str = f" ({score:.1f}% AI probability)" if score is not None else ""
+            details.add_row("Humanize", f"{preview.get('humanize_status')}{score_str}")
 
+        source_title = (
+            "Source article"
+            if (
+                preview.get("source_type") == "news_article"
+                or "techcrunch" in str(preview.get("permalink", ""))
+            )
+            else "Source tweet"
+        )
+        source_text = str(preview.get("tweet_text") or preview.get("title") or "")
         console.print()
         console.print(
             Panel(
-                str(preview.get("tweet_text", "")),
-                title="Source tweet",
+                source_text,
+                title=source_title,
                 border_style="blue",
             )
         )
@@ -346,6 +421,15 @@ class PipelineRunner:
                 border_style="green",
             )
         )
+        first_comment = preview.get("first_comment")
+        if first_comment:
+            console.print(
+                Panel(
+                    str(first_comment),
+                    title="Staged first comment",
+                    border_style="cyan",
+                )
+            )
         console.print()
 
     def confirm_and_present(self, preview: dict[str, Any]) -> bool:
@@ -367,6 +451,277 @@ class PipelineRunner:
         except (EOFError, KeyboardInterrupt):
             logger.warning("Confirmation prompt interrupted; treating as declined.")
             return False
+
+    def render_comment_preview(
+        self, post: LinkedInPostDetails, draft: TargetCommentDraft
+    ) -> None:
+        """Render Rich terminal panels for target post, raw draft, and humanized comment."""
+        from rich.panel import Panel
+        from rich.table import Table
+
+        console = self._rich_console
+        console.print()
+
+        details = Table.grid(padding=(0, 1))
+        details.add_column(style="bold cyan", no_wrap=True)
+        details.add_column()
+
+        author_display = post.author_name or post.author_urn or "Unknown"
+        details.add_row("Author", author_display)
+        details.add_row("URN", post.post_urn)
+        if post.has_image:
+            media_desc = f"[IMAGE] {post.media.title or 'Primary image asset'}"
+            details.add_row("Media", media_desc)
+        else:
+            details.add_row("Media", "<none>")
+
+        console.print(Panel(details, title="Target post", border_style="blue"))
+        console.print(
+            Panel(
+                post.commentary_text,
+                title="Original Post Text",
+                border_style="blue",
+            )
+        )
+        console.print(
+            Panel(
+                draft.raw_text,
+                title="Synthesized Commentary (Raw)",
+                border_style="green",
+            )
+        )
+        ai_score_text = (
+            f" ({draft.ai_detection_score:.1f}% AI probability)"
+            if draft.ai_detection_score is not None
+            else ""
+        )
+        console.print(
+            Panel(
+                draft.publishable_text,
+                title=f"Humanized Comment{ai_score_text}",
+                border_style="cyan" if draft.humanized_text else "yellow",
+            )
+        )
+        console.print()
+
+    async def run_comment_post(self, options: RunnerOptions) -> PipelineRunResult:
+        """Execute targeted LinkedIn post commenting workflow."""
+        if not options.comment_post:
+            return PipelineRunResult(
+                status=STATUS_FAILED,
+                error="--comment-post URL or URN is required.",
+                failed=True,
+            )
+
+        console = self._rich_console
+        target_urn = parse_linkedin_post_target(options.comment_post)
+
+        # 1. Resolve LinkedIn client
+        linkedin_client = None
+        if self._components and self._components.linkedin_client:
+            linkedin_client = self._components.linkedin_client
+        else:
+            try:
+                linkedin_client = build_client(self.config)
+            except Exception as exc:
+                if not options.dry_run:
+                    raise
+                logger.warning(
+                    "LinkedIn client credentials unavailable (%s); continuing in dry-run mode.",
+                    exc,
+                )
+
+        if linkedin_client is None:
+            return PipelineRunResult(
+                status=STATUS_FAILED,
+                error="LinkedIn client could not be initialized.",
+                failed=True,
+            )
+
+        # 2. Ingest target post
+        try:
+            post = await linkedin_client.get_post(target_urn)
+        except Exception as exc:
+            console.print(
+                f"[bold red]{MSG_FAILED}[/bold red] Failed to fetch post: {exc}"
+            )
+            logger.error("Failed to fetch LinkedIn post %s: %s", target_urn, exc)
+            return PipelineRunResult(
+                status=STATUS_FAILED,
+                error=f"Failed to fetch LinkedIn post: {exc}",
+                failed=True,
+            )
+
+        # 3. Download image bytes if present
+        image_bytes: bytes | None = None
+        image_mime: str = "image/jpeg"
+        if post.has_image and post.media.media_url:
+            try:
+                image_bytes, image_mime = await linkedin_client.fetch_image_bytes(
+                    post.media.media_url
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Could not download post image (%s); proceeding with text commentary.",
+                    exc,
+                )
+
+        # 4. Resolve pipeline context
+        context = None
+        try:
+            context = ContextLoader(self.config.agent.context_dir).load()
+        except Exception as exc:
+            logger.debug(
+                "ContextLoader could not load full context (%s); using defaults.", exc
+            )
+
+        extra_context: str | None = None
+        if options.article:
+            try:
+                from src.news.extractor import ArticleExtractor
+
+                extractor = ArticleExtractor(timeout_seconds=20.0)
+                extracted = await extractor.extract(options.article)
+                extra_context = f"Title: {extracted.title}\n{extracted.full_text[:4000]}"
+                logger.info(
+                    "Extracted context from %s (%d chars)",
+                    options.article,
+                    len(extra_context),
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Could not extract context from article URL %s: %s",
+                    options.article,
+                    exc,
+                )
+
+        # 5. Commentary synthesis and anti-detection humanization loop
+        browser_factory = (
+            getattr(self._components, "humanize_browser_factory", None)
+            if self._components
+            else None
+        )
+
+        draft: TargetCommentDraft | None = None
+        while True:
+            draft = await synthesize_post_comment(
+                post,
+                image_bytes=image_bytes,
+                image_mime_type=image_mime,
+                model=self.config.agent.model,
+                context=context,
+                extra_context=extra_context,
+            )
+
+            # Humanize stage with fail-safe recovery loop
+            while True:
+                try:
+                    detection_res, humanized_text = await humanize_commentary(
+                        draft.raw_text,
+                        config=self.config.humanize,
+                        browser_factory=browser_factory,
+                    )
+                    draft.humanized_text = humanized_text
+                    draft.ai_detection_score = detection_res.ai_probability
+                    draft.humanize_status = "SUCCESS"
+                    break
+                except Exception as exc:
+                    logger.warning("HumanizeAI failed: %s", exc)
+                    draft.humanize_status = "FAILED_HUMANIZATION"
+                    draft = handle_comment_humanize_failure(
+                        draft,
+                        interactive=not (
+                            options.effective_auto_publish or options.dry_run
+                        ),
+                    )
+                    if getattr(draft, "recovery_action", None) == "RETRY":
+                        continue
+                    break
+
+            if getattr(draft, "recovery_action", None) == "REGENERATE":
+                continue
+            break
+
+        if (
+            getattr(draft, "recovery_action", None) == "CANCEL"
+            or draft.humanize_status == "FAILED_HUMANIZATION"
+        ):
+            console.print(f"[bold yellow]{MSG_SKIPPED}[/bold yellow]")
+            return PipelineRunResult(
+                status=STATUS_SKIPPED,
+                error="Publication cancelled by operator.",
+                failed=False,
+            )
+
+        # 6. Render preview
+        self.render_comment_preview(post, draft)
+
+        # 7. Dry run check
+        if options.dry_run:
+            console.print(f"[bold yellow]{MSG_DRY_RUN}[/bold yellow]")
+            logger.info(MSG_DRY_RUN)
+            return PipelineRunResult(
+                status=STATUS_DRY_RUN,
+                state={"post": post.model_dump(), "draft": draft.model_dump()},
+                failed=False,
+            )
+
+        # 8. Confirmation prompt
+        confirmed = False
+        if options.effective_auto_publish:
+            confirmed = True
+        elif self._confirm_prompt is not None:
+            confirmed = bool(self._confirm_prompt({"post": post, "draft": draft}))
+        else:
+            from rich.prompt import Confirm
+
+            try:
+                confirmed = bool(
+                    Confirm.ask(
+                        "Publish comment to LinkedIn?",
+                        default=False,
+                        console=console,
+                    )
+                )
+            except (EOFError, KeyboardInterrupt):
+                confirmed = False
+
+        if not confirmed:
+            console.print(f"[bold yellow]{MSG_SKIPPED}[/bold yellow]")
+            logger.info(MSG_SKIPPED)
+            return PipelineRunResult(
+                status=STATUS_SKIPPED,
+                error="Comment publication declined by operator.",
+                failed=False,
+            )
+
+        # 9. Publish comment via official API
+        try:
+            resp = await linkedin_client.create_comment(
+                post.post_urn,
+                draft.publishable_text,
+            )
+            console.print(
+                f"[bold green]Published comment to LinkedIn:[/bold green] {resp.comment_urn}"
+            )
+            logger.info("Published comment to LinkedIn: %s", resp.comment_urn)
+            return PipelineRunResult(
+                status=STATUS_SUCCESS,
+                state={
+                    "comment_urn": resp.comment_urn,
+                    "post_urn": post.post_urn,
+                    "comment_text": draft.publishable_text,
+                },
+                failed=False,
+            )
+        except Exception as exc:
+            console.print(f"[bold red]{MSG_FAILED}[/bold red] {exc}")
+            logger.error("Comment publication failed: %s", exc)
+            return PipelineRunResult(
+                status=STATUS_FAILED,
+                error=str(exc),
+                failed=True,
+            )
 
     def report(self, result: PipelineRunResult) -> None:
         """Print and log the operator-facing outcome of a run."""
@@ -401,9 +756,23 @@ class PipelineRunner:
                 self.config.twitter.lookback_hours,
                 rationale,
             )
+        elif status == STATUS_FAILED_HUMANIZATION:
+            console.print(
+                f"[bold red]Pipeline halted: HumanizeAI unavailable.[/bold red] {result.error or ''}"
+            )
+            logger.error("Pipeline halted by strict fail-safe: %s", result.error)
         else:
             console.print(f"[bold red]{MSG_FAILED}[/bold red] {result.error or ''}")
             logger.error("Pipeline failed: %s", result.error)
+
+        humanize_status = result.get(KEY_HUMANIZE_STATUS)
+        ai_score = result.get(KEY_AI_DETECTION_SCORE)
+        if humanize_status:
+            score_text = (
+                f" (AI probability: {ai_score:.1f}%)" if ai_score is not None else ""
+            )
+            console.print(f"[dim]Humanization: {humanize_status}{score_text}[/dim]")
+            logger.info("Humanization: %s%s", humanize_status, score_text)
 
     # -- execution ----------------------------------------------------------
     async def run_once(self) -> PipelineRunResult:
@@ -419,6 +788,9 @@ class PipelineRunner:
                 dry_run=self.options.dry_run,
                 auto_publish=self.options.effective_auto_publish,
                 target_tweet_id=self.options.tweet,
+                target_article_url=self.options.article,
+                target_image_caption=self.options.image_caption,
+                target_image_credits=self.options.image_credits,
             ),
         )
         self.report(result)
@@ -535,6 +907,10 @@ async def run_async(
     active.configure_logging()
 
     try:
+        if options.comment_post:
+            result = await active.run_comment_post(options)
+            return EXIT_FAILURE if result.failed else EXIT_OK
+
         if options.is_scheduled:
             active.build()
             await active.run_forever()

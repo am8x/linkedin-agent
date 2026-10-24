@@ -107,7 +107,7 @@ def to_source_tweet(raw: Any, *, handle: str | None = None) -> SourceTweet | Non
         logger.debug("Skipping tweet %s: no creation timestamp.", tweet_id)
         return None
 
-    text = getattr(raw, "text", "") or ""
+    text = getattr(raw, "full_text", None) or getattr(raw, "text", "") or ""
     clean_handle = str(author_handle).lstrip("@")
 
     try:

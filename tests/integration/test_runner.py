@@ -145,6 +145,21 @@ class TestArgumentParsing:
         with pytest.raises(SystemExit):
             parse_args(["--tweet", "not-a-valid-target"])
 
+    def test_article_url_and_image_options(self) -> None:
+        options = parse_args(
+            [
+                "--article",
+                "https://techcrunch.com/2026/10/15/tesla-roadster/",
+                "--image-caption",
+                "Tesla roadster event",
+                "--image-credits",
+                "Image Credits:Tesla",
+            ]
+        )
+        assert options.article == "https://techcrunch.com/2026/10/15/tesla-roadster/"
+        assert options.image_caption == "Tesla roadster event"
+        assert options.image_credits == "Image Credits:Tesla"
+
 
 # ---------------------------------------------------------------------------
 # Single-run mode

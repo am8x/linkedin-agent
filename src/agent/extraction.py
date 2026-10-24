@@ -7,6 +7,7 @@ or when no item is selected, this step cleanly no-ops.
 
 from __future__ import annotations
 
+import re
 from collections.abc import AsyncGenerator
 from typing import Any
 
@@ -60,7 +61,9 @@ class ArticleExtractionAgent(BaseAgent):
 
         selected_item = state.get(KEY_SELECTED_ITEM)
         if not selected_item:
-            logger.debug("No selected item in state; article extraction is a clean no-op.")
+            logger.debug(
+                "No selected item in state; article extraction is a clean no-op."
+            )
             return {}
 
         source_type = selected_item.get("source_type")
@@ -68,11 +71,69 @@ class ArticleExtractionAgent(BaseAgent):
             source_type != CandidateSourceType.NEWS_ARTICLE.value
             and source_type != CandidateSourceType.NEWS_ARTICLE
         ):
-            logger.debug(
-                "Selected item is of source_type '%s', not news_article; extraction is a clean no-op.",
-                source_type,
+            tweet_text = str(
+                selected_item.get("summary")
+                or selected_item.get("title")
+                or (state.get("selected_tweet") or {}).get("text")
+                or ""
             )
-            return {}
+            raw_payload = selected_item.get("raw_payload") or {}
+            urls: list[str] = []
+            if isinstance(raw_payload, dict) and raw_payload.get("urls"):
+                for u in raw_payload["urls"]:
+                    if isinstance(u, dict) and u.get("expanded_url"):
+                        urls.append(u["expanded_url"])
+                    elif isinstance(u, str):
+                        urls.append(u)
+            if not urls:
+                urls = re.findall(r"https?://[^\s)\]]+", tweet_text)
+
+            external_urls = [
+                u
+                for u in urls
+                if not any(domain in u.lower() for domain in ("x.com", "twitter.com"))
+            ]
+            if not external_urls:
+                logger.debug(
+                    "Selected item is of source_type '%s' with no external article link; extraction is a clean no-op.",
+                    source_type,
+                )
+                return {}
+
+            url = external_urls[0]
+            raw_payload = selected_item.get("raw_payload") or {}
+            publication_name = str(
+                raw_payload.get("author_name")
+                or selected_item.get("author_name")
+                or selected_item.get("author_or_source")
+                or selected_item.get("author_handle")
+                or ""
+            ).lstrip("@")
+            extractor = self.extractor or ArticleExtractor()
+            try:
+                article = await extractor.extract(
+                    url, publication_name=publication_name
+                )
+                if not article.full_text or len(article.full_text.strip()) < 50:
+                    logger.debug(
+                        "Article extraction from tweet link %s yielded empty body; skipping.",
+                        url,
+                    )
+                    return {}
+            except Exception as exc:
+                logger.warning(
+                    "Article extraction from tweet link %s failed: %s", url, exc
+                )
+                return {}
+
+            logger.info(
+                "Extracted linked article '%s' (%s) from tweet %s (%d words).",
+                article.title,
+                article.url,
+                selected_item.get("id"),
+                article.word_count,
+            )
+            return {KEY_EXTRACTED_ARTICLE: to_state_dict(article)}
 
         url = str(
             selected_item.get("url")
@@ -91,9 +152,23 @@ class ArticleExtractionAgent(BaseAgent):
             or ""
         )
 
+        raw_payload = selected_item.get("raw_payload") or {}
+        image_query = raw_payload.get("target_image_caption") or state.get(
+            "target_image_caption"
+        )
+        preferred_credit = raw_payload.get("target_image_credits") or state.get(
+            "target_image_credits"
+        )
+
         extractor = self.extractor or ArticleExtractor()
+        extract_kwargs: dict[str, Any] = {"publication_name": publication_name}
+        if image_query is not None:
+            extract_kwargs["image_query"] = image_query
+        if preferred_credit is not None:
+            extract_kwargs["preferred_image_credit"] = preferred_credit
+
         try:
-            article = await extractor.extract(url, publication_name=publication_name)
+            article = await extractor.extract(url, **extract_kwargs)
         except Exception as exc:
             message = f"Article extraction failed: {type(exc).__name__}: {exc}"
             logger.exception(message)
@@ -101,7 +176,11 @@ class ArticleExtractionAgent(BaseAgent):
 
         if not getattr(article, "author", None):
             payload_author = selected_item.get("raw_payload", {}).get("author")
-            if payload_author and isinstance(payload_author, str) and payload_author.strip():
+            if (
+                payload_author
+                and isinstance(payload_author, str)
+                and payload_author.strip()
+            ):
                 article = article.model_copy(update={"author": payload_author.strip()})
 
         logger.info(

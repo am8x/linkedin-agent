@@ -41,9 +41,9 @@ class TestCommentaryModelFeature002:
         with pytest.raises(ValidationError):
             Commentary(text="Too short", paragraph_count=1)
 
-    def test_commentary_rejects_over_1200_chars(self) -> None:
+    def test_commentary_rejects_over_3000_chars(self) -> None:
         with pytest.raises(ValidationError):
-            Commentary(text="x" * 1201, paragraph_count=2)
+            Commentary(text="x" * 3001, paragraph_count=2)
 
 
 class TestCommentaryInstructionFormatting:

@@ -25,6 +25,7 @@ from src.agent.commentary import (
 )
 from src.agent.state import (
     KEY_COMMENTARY,
+    KEY_COMMENTARY_RAW,
     KEY_ERROR,
     KEY_EXECUTION_STATUS,
     KEY_SELECTED_TWEET,
@@ -49,13 +50,13 @@ class TestCommentaryEntity:
         with pytest.raises(ValidationError):
             Commentary(text="too short")
 
-    def test_rejects_text_longer_than_twelve_hundred_characters(self) -> None:
+    def test_rejects_text_longer_than_platform_ceiling(self) -> None:
         with pytest.raises(ValidationError):
-            Commentary(text="x" * 1201)
+            Commentary(text="x" * 3001)
 
     def test_accepts_the_boundary_lengths(self) -> None:
         assert Commentary(text="a" * 10).character_count == 10
-        assert Commentary(text="a" * 1200).character_count == 1200
+        assert Commentary(text="a" * 3000).character_count == 3000
 
     def test_sentence_count_helper(self) -> None:
         commentary = Commentary(text="One sentence here. And a second one.")
@@ -271,7 +272,53 @@ class TestCommentaryCallbacks:
         assert record is not None
         assert record["text"] == "A grounded and punchy takeaway."
         assert record["model_name"] == "gemini-3.8-flash"
+        assert context.state[KEY_COMMENTARY_RAW] == "A grounded and punchy takeaway."
         assert context.state[KEY_ERROR] is None
+
+    def test_publish_commentary_allows_technical_terms(self) -> None:
+        from src.agent.commentary import _publish_commentary
+        from src.agent.guardrails import StyleGuardrail
+
+        text = (
+            "Infrastructure bottlenecks are fundamental constraints in large clusters.\n\n"
+            "Systems reward engineers who optimize memory bandwidth directly."
+        )
+        context = StubCallbackContext(
+            {
+                KEY_SELECTED_TWEET: {"tweet_id": "1"},
+                COMMENTARY_OUTPUT_KEY: text,
+            }
+        )
+        guard = StyleGuardrail()
+        _publish_commentary(context, AgentConfig(), guardrail=guard)
+
+        record = context.state[KEY_COMMENTARY]
+        assert record is not None
+        assert "Infrastructure" in record["text"]
+        assert context.state[KEY_ERROR] is None
+
+    def test_publish_commentary_handles_one_to_three_paragraphs(self) -> None:
+        from src.agent.commentary import _publish_commentary
+
+        single_p = "A single focused punchline that meets character minimums."
+        context1 = StubCallbackContext(
+            {
+                KEY_SELECTED_TWEET: {"tweet_id": "1"},
+                COMMENTARY_OUTPUT_KEY: single_p,
+            }
+        )
+        _publish_commentary(context1, AgentConfig())
+        assert context1.state[KEY_COMMENTARY]["paragraph_count"] == 1
+
+        three_p = "First hook paragraph.\n\nSecond technical paragraph.\n\nThird takeaway paragraph."
+        context3 = StubCallbackContext(
+            {
+                KEY_SELECTED_TWEET: {"tweet_id": "1"},
+                COMMENTARY_OUTPUT_KEY: three_p,
+            }
+        )
+        _publish_commentary(context3, AgentConfig())
+        assert context3.state[KEY_COMMENTARY]["paragraph_count"] == 3
 
     def test_publish_commentary_records_grounding_enabled(self) -> None:
         from src.agent.commentary import (

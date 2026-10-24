@@ -446,4 +446,3 @@ class TestPublicationLedger:
             ledger.claim(duplicate_entry)
 
         ledger.close()
-

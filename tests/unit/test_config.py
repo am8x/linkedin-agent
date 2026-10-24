@@ -12,11 +12,13 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from pydantic import ValidationError
 
 from src.agent.capture import create_capture_agent
 from src.agent.ingestion import create_ingestion_agent
 from src.config import (
     ConfigurationError,
+    HumanizeConfig,
     Secrets,
     load_config,
 )
@@ -208,7 +210,7 @@ storage:
 """,
             encoding="utf-8",
         )
-        config = load_config(yaml_path, load_env=False)
+        config = load_config(yaml_path, load_env=False, env={})
         assert config.twitter.account_delay_seconds == 4.5
 
     def test_account_delay_seconds_environment_override(self, tmp_path: Path) -> None:
@@ -230,3 +232,62 @@ storage:
             env={"SIDEKICK_ACCOUNT_DELAY_SECONDS": "5.5"},
         )
         assert config.twitter.account_delay_seconds == 5.5
+
+
+# ---------------------------------------------------------------------------
+# HumanizeConfig schema & overrides
+# ---------------------------------------------------------------------------
+class TestHumanizeConfig:
+    def test_default_values(self) -> None:
+        cfg = HumanizeConfig()
+        assert cfg.enabled is True
+        assert cfg.headless is True
+        assert cfg.timeout_seconds == 30.0
+        assert cfg.auto_retry is True
+        assert cfg.retry_cooldown_seconds == 2.0
+        assert cfg.detector_url == "https://www.humanizeai.pro/detector"
+        assert cfg.humanize_url == "https://www.humanizeai.pro/"
+
+    def test_validation_bounds(self) -> None:
+        with pytest.raises(ValidationError):
+            HumanizeConfig(timeout_seconds=2.0)  # ge=5.0
+
+        with pytest.raises(ValidationError):
+            HumanizeConfig(timeout_seconds=200.0)  # le=120.0
+
+        with pytest.raises(ValidationError):
+            HumanizeConfig(retry_cooldown_seconds=0.1)  # ge=0.5
+
+        with pytest.raises(ValidationError):
+            HumanizeConfig(retry_cooldown_seconds=15.0)  # le=10.0
+
+        with pytest.raises(ValidationError):
+            HumanizeConfig(detector_url="not-a-url")
+
+    def test_environment_variable_overrides(self, tmp_path: Path) -> None:
+        yaml_path = tmp_path / "config.yaml"
+        yaml_path.write_text(
+            """
+humanize:
+  enabled: true
+  headless: true
+  timeout_seconds: 30.0
+""",
+            encoding="utf-8",
+        )
+        config = load_config(
+            yaml_path,
+            load_env=False,
+            env={
+                "HUMANIZE_ENABLED": "false",
+                "HUMANIZE_HEADLESS": "false",
+                "HUMANIZE_TIMEOUT_SECONDS": "45.0",
+                "HUMANIZE_DETECTOR_URL": "https://custom.detector.local",
+                "HUMANIZE_URL": "https://custom.humanizer.local",
+            },
+        )
+        assert config.humanize.enabled is False
+        assert config.humanize.headless is False
+        assert config.humanize.timeout_seconds == 45.0
+        assert config.humanize.detector_url == "https://custom.detector.local"
+        assert config.humanize.humanize_url == "https://custom.humanizer.local"

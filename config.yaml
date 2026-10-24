@@ -7,33 +7,33 @@ twitter:
   cookies_path: "cookies.json"
   accounts:
   - "sama"  # Sam Altman - CEO, OpenAI
-  # - "karpathy"  # Andrej Karpathy - Founder, Eureka Labs / Former Director of AI, Tesla
-  # - "ylecun"  # Yann LeCun - Chief AI Scientist, Meta
+  - "karpathy"  # Andrej Karpathy - Founder, Eureka Labs / Former Director of AI, Tesla
+  - "ylecun"  # Yann LeCun - Chief AI Scientist, Meta
   - "miramurati"  # Mira Murati - Founder & CEO, Thinking Machines Lab / Former CTO, OpenAI
   - "elonmusk"  # Elon Musk - CEO, Tesla & xAI / Owner, X
   - "antonosika"  # Anton Osika - Founder & CEO, Lovable
-  # - "jack"  # Jack Dorsey - Co-founder & Block Head, Block (Square) / Former CEO, Twitter
-  # - "finkd"  # Mark Zuckerberg - Founder & CEO, Meta
-  # - "asha_shar"  # Asha Sharma - CEO, Xbox & Gaming / Former President, CoreAI at Microsoft
+  - "jack"  # Jack Dorsey - Co-founder & Block Head, Block (Square) / Former CEO, Twitter
+  - "finkd"  # Mark Zuckerberg - Founder & CEO, Meta
+  - "asha_shar"  # Asha Sharma - CEO, Xbox & Gaming / Former President, CoreAI at Microsoft
   # - "AravSrinivas"  # Aravind Srinivas - Co-founder & CEO, Perplexity AI
-  # - "DarioAmodei"  # Dario Amodei - Co-founder & CEO, Anthropic
+  - "DarioAmodei"  # Dario Amodei - Co-founder & CEO, Anthropic
   # - "arthurmensch"  # Arthur Mensch - Co-founder & CEO, Mistral AI
-  # - "alexandr_wang"  # Alexandr Wang - Founder & CEO, Scale AI
-  # - "demishassabis"  # Demis Hassabis - Co-founder & CEO, Google DeepMind
+  - "alexandr_wang"  # Alexandr Wang - Founder & CEO, Scale AI
+  - "demishassabis"  # Demis Hassabis - Co-founder & CEO, Google DeepMind
   # - "satyanadella"  # Satya Nadella - Chairman & CEO, Microsoft
-  # - "sundarpichai"  # Sundar Pichai - CEO, Alphabet & Google
+  - "sundarpichai"  # Sundar Pichai - CEO, Alphabet & Google
   # - "tim_cook"  # Tim Cook - CEO, Apple
   # - "clemdelangue"  # Clément Delangue - Co-founder & CEO, Hugging Face
   # - "sama_fast"  # Richard Socher - CEO, You.com
   # - "RichardSocher"  # Richard Socher - Founder & CEO, You.com
-  # - "gdb"  # Greg Brockman - Co-founder & President, OpenAI
-  # - "ilyasut"  # Ilya Sutskever - Co-founder & Chief Scientist, Safe Superintelligence (SSI)
+  - "gdb"  # Greg Brockman - Co-founder & President, OpenAI
+  - "ilyasut"  # Ilya Sutskever - Co-founder & Chief Scientist, Safe Superintelligence (SSI)
   # - "danny_postma"  # Danny Postma - Founder & CEO, HeadshotPro
-  # - "rauchg"  # Guillermo Rauch - CEO, Vercel
+  - "rauchg"  # Guillermo Rauch - CEO, Vercel
   # - "levelsio"  # Pieter Levels - Founder, PhotoAI & Nomad List
   # - "paraga"  # Parag Agrawal - Founder, Parallel Web Systems / Former CEO, Twitter
-  # - "ghodsi_ali"  # Ali Ghodsi - Co-founder & CEO, Databricks
-  # - "swyx"  # Shawn Wang (swyx) - Founder, Smarter Web / AI Engineer Foundation
+  - "ghodsi_ali"  # Ali Ghodsi - Co-founder & CEO, Databricks
+  - "swyx"  # Shawn Wang (swyx) - Founder, Smarter Web / AI Engineer Foundation
   # - "drfeifei"  # Fei-Fei Li - Co-founder & CEO, World Labs
   # - "alliekmiller"  # Allie K. Miller - Top AI Advisor, Investor & Former Head of AI at AWS
   lookback_hours: 18
@@ -49,9 +49,9 @@ news:
   request_timeout_seconds: 15.0  # Timeout for feed HTTP requests
   user_agent: "LinkedInSidekick/1.0 (+https://github.com/sidekick)"
   feeds:
-    - name: "Hacker News (Frontpage)"
-      url: "https://news.ycombinator.com/rss"
-      category: "technology"
+    # - name: "Hacker News (Frontpage)"
+    #   url: "https://news.ycombinator.com/rss"
+    #   category: "technology"
     - name: "Ars Technica (Information Technology)"
       url: "https://feeds.arstechnica.com/arstechnica/technology-lab"
       category: "engineering"
@@ -65,7 +65,7 @@ render:
   hide_metrics: true         # Suppress view, retweet, like counters
   viewport_width: 1200
   viewport_height: 800
-  timeout_seconds: 15
+  timeout_seconds: 45
   output_dir: ".assets/screenshots"
 
 # Google ADK Generative AI Commentary Settings
@@ -87,6 +87,18 @@ scheduler:
 # SQLite Persistence Path
 storage:
   db_path: "state/sidekick.db"
+
+# ---------------------------------------------------------------------------
+# HumanizeAI Browser Automation Settings (Playwright)
+# ---------------------------------------------------------------------------
+humanize:
+  enabled: true                        # Master toggle to enable/disable HumanizeAI processing
+  headless: false                      # Headless mode false to pass Cloudflare Turnstile verification
+  timeout_seconds: 30.0                # Total timeout per page operation and network idle wait
+  detector_url: "https://www.humanizeai.pro/detector"  # Target AI detector tool URL
+  humanize_url: "https://www.humanizeai.pro/"          # Target Humanizer rewriting tool URL
+  auto_retry: true                     # Perform 1 automatic retry on transient timeouts
+  retry_cooldown_seconds: 2.0          # Pause duration before executing retry attempt
 
 # Structured Logging
 logging:

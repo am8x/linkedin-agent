@@ -1,4 +1,5 @@
 """Unit tests for news and RSS feed configuration validation."""
+
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -48,7 +49,9 @@ def test_duplicate_url_rejection() -> None:
         NewsConfig(
             feeds=[
                 FeedItemConfig(name="Feed 1", url="https://example.com/rss"),
-                FeedItemConfig(name="Feed 2", url="https://example.com/rss/"),  # normalized duplicate
+                FeedItemConfig(
+                    name="Feed 2", url="https://example.com/rss/"
+                ),  # normalized duplicate
             ]
         )
 

@@ -7,6 +7,7 @@ distraction-free quote card rather than a full Twitter UI dump.
 
 from __future__ import annotations
 
+import json
 from typing import Any, Literal
 
 Theme = Literal["dark", "light"]
@@ -29,6 +30,9 @@ METRIC_SELECTORS: tuple[str, ...] = (
     '[data-testid="app-text-transition-container"]',
     '[data-testid="analytics"]',
     'a[href$="/analytics"]',
+    'a[href*="/quotes"]',
+    '[aria-label*="quotes" i]',
+    '[aria-label*="Quotes" i]',
     '[aria-label*="View post analytics"]',
     '[aria-label*="Likes"]',
     '[aria-label*="Reposts"]',
@@ -44,6 +48,9 @@ CHROME_SELECTORS: tuple[str, ...] = (
     '[data-testid="BottomBar"]',
     '[data-testid="DMDrawer"]',
     'nav[aria-label="Primary"]',
+    '[data-testid="TopNavBar"]',
+    'button[data-testid="app-bar-back-button"]',
+    'button[aria-label="Back"]',
 )
 
 DARK_THEME_CSS = """
@@ -133,10 +140,10 @@ def build_injection_script(
     Inline styles are used in addition to the stylesheet because Twitter's own
     runtime re-renders parts of the card after hydration.
     """
-    selector_json = ", ".join(f'"{selector}"' for selector in selectors)
+    selector_json = json.dumps(list(selectors))
     metrics_block = (
         f"""
-    const METRIC_SELECTORS = [{selector_json}];
+    const METRIC_SELECTORS = {selector_json};
     for (const selector of METRIC_SELECTORS) {{
         document.querySelectorAll(selector).forEach((node) => {{
             if (node instanceof HTMLElement) {{
@@ -145,6 +152,39 @@ def build_injection_script(
             }}
         }});
     }}
+
+    // Hide sticky top navigation header so it never covers the author info
+    const backBtn = document.querySelector('button[data-testid="app-bar-back-button"]') || document.querySelector('button[aria-label="Back"]');
+    if (backBtn) {{
+        let cur = backBtn;
+        while (cur && cur.parentElement && cur.parentElement !== document.body) {{
+            const s = window.getComputedStyle(cur);
+            if (s.position === 'sticky' || s.position === 'fixed') {{
+                cur.style.setProperty('display', 'none', 'important');
+                break;
+            }}
+            cur = cur.parentElement;
+        }}
+    }}
+
+    // Hide any sticky bar with text starting with 'Post'
+    Array.from(document.querySelectorAll('*')).forEach((el) => {{
+        const s = window.getComputedStyle(el);
+        if ((s.position === 'sticky' || s.position === 'fixed') && el.innerText && el.innerText.trim().startsWith('Post')) {{
+            el.style.setProperty('display', 'none', 'important');
+        }}
+    }});
+
+    // Hide 'Relevant' sort button and its row container
+    document.querySelectorAll('button').forEach((btn) => {{
+        if (btn.innerText && btn.innerText.includes('Relevant')) {{
+            const row = btn.closest('div[class*="r-1wtj0ep"]') || btn.parentElement;
+            if (row) {{
+                row.style.setProperty('display', 'none', 'important');
+            }}
+            btn.style.setProperty('display', 'none', 'important');
+        }}
+    }});
 """
         if hide_metrics
         else ""

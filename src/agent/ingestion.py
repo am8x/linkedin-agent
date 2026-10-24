@@ -90,6 +90,46 @@ class TweetIngestionAgent(BaseAgent):
 
     # -- internals ----------------------------------------------------------
     async def _ingest(self, state: Any) -> dict[str, Any]:
+        target_article_url = state.get("target_article_url")
+        if target_article_url:
+            import hashlib
+            import urllib.parse
+
+            url_clean = str(target_article_url).strip()
+            item_id = f"art_{hashlib.sha256(url_clean.encode()).hexdigest()[:12]}"
+            domain = (
+                urllib.parse.urlparse(url_clean).netloc.lower().removeprefix("www.")
+            )
+            pub_name = (
+                "TechCrunch" if "techcrunch.com" in domain else domain.capitalize()
+            )
+
+            c_item = CandidateItem(
+                id=item_id,
+                source_type=CandidateSourceType.NEWS_ARTICLE,
+                title=url_clean,
+                url=url_clean,
+                author_or_source=pub_name,
+                published_at=datetime.now(UTC),
+                summary="",
+                raw_payload={
+                    "url": url_clean,
+                    "target_image_caption": state.get("target_image_caption"),
+                    "target_image_credits": state.get("target_image_credits"),
+                },
+            )
+            candidate_dicts = [to_state_dict(c_item)]
+            logger.info("Direct article ingestion targeted: %s", url_clean)
+            return {
+                KEY_CANDIDATE_TWEETS: [],
+                KEY_ELIGIBLE_TWEETS: [],
+                KEY_CANDIDATE_ITEMS: candidate_dicts,
+                KEY_SELECTED_TWEET: None,
+                KEY_SELECTED_ITEM: to_state_dict(c_item),
+                KEY_ERROR: None,
+                KEY_EXECUTION_STATUS: STATUS_INGESTED,
+            }
+
         target_tweet_id = state.get(KEY_TARGET_TWEET_ID)
         lookback = int(state.get(KEY_LOOKBACK_HOURS) or self.lookback_hours)
 
@@ -175,7 +215,9 @@ class TweetIngestionAgent(BaseAgent):
         monitored_feed_defs = monitored_feed_defs or []
 
         if not accounts and not monitored_feed_defs:
-            message = "No monitored accounts or news feeds configured; nothing to ingest."
+            message = (
+                "No monitored accounts or news feeds configured; nothing to ingest."
+            )
             logger.error(message)
             return {
                 KEY_CANDIDATE_TWEETS: [],
@@ -234,7 +276,9 @@ class TweetIngestionAgent(BaseAgent):
                             name=name,
                             url=str(url),
                             category=category,
-                            max_items_per_poll=int(max_items) if max_items is not None else 10,
+                            max_items_per_poll=int(max_items)
+                            if max_items is not None
+                            else 10,
                         )
                     )
 
@@ -285,10 +329,16 @@ class TweetIngestionAgent(BaseAgent):
 
         if not unified_candidates:
             # Check if all queried sources failed
-            if (accounts and twitter_failed and not monitored_feed_defs) or (
-                monitored_feed_defs and news_failed and not accounts
-            ) or (accounts and monitored_feed_defs and twitter_failed and news_failed):
-                error_msg = twitter_error_message or news_error_message or "All ingestion sources failed."
+            if (
+                (accounts and twitter_failed and not monitored_feed_defs)
+                or (monitored_feed_defs and news_failed and not accounts)
+                or (accounts and monitored_feed_defs and twitter_failed and news_failed)
+            ):
+                error_msg = (
+                    twitter_error_message
+                    or news_error_message
+                    or "All ingestion sources failed."
+                )
                 return {
                     KEY_CANDIDATE_TWEETS: [],
                     KEY_ELIGIBLE_TWEETS: [],
@@ -329,7 +379,9 @@ class TweetIngestionAgent(BaseAgent):
             KEY_CANDIDATE_TWEETS: candidate_tweet_dicts,
             KEY_ELIGIBLE_TWEETS: candidate_tweet_dicts,
             KEY_CANDIDATE_ITEMS: candidate_item_dicts,
-            KEY_SELECTED_TWEET: to_state_dict(selected_tweet) if selected_tweet else None,
+            KEY_SELECTED_TWEET: to_state_dict(selected_tweet)
+            if selected_tweet
+            else None,
             KEY_SELECTED_ITEM: to_state_dict(selected_item),
             KEY_ERROR: None,
             KEY_EXECUTION_STATUS: STATUS_INGESTED,
@@ -389,9 +441,7 @@ class TweetIngestionAgent(BaseAgent):
     ) -> list[CandidateItem]:
         if self.ledger is None or not articles:
             return articles
-        unposted_urls = set(
-            self.ledger.unposted_source_urls([a.url for a in articles])
-        )
+        unposted_urls = set(self.ledger.unposted_source_urls([a.url for a in articles]))
         filtered = [a for a in articles if a.url in unposted_urls]
         dropped = len(articles) - len(filtered)
         if dropped:

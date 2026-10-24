@@ -68,7 +68,8 @@ class CuratorDecision(BaseModel):
         default=None, description="ID of chosen winning candidate"
     )
     selected_tweet_id: str | None = Field(
-        default=None, description="ID of chosen winning tweet (for backward compatibility)"
+        default=None,
+        description="ID of chosen winning tweet (for backward compatibility)",
     )
     selection_rationale: str = Field(
         description="Detailed comparative justification for why this item was chosen"
@@ -154,12 +155,9 @@ async def default_gemini_evaluator(
 
 def _extract_tweet_dict(selected_candidate: dict[str, Any]) -> dict[str, Any] | None:
     """Extract or normalize a tweet dictionary for backward compatibility."""
-    is_tweet = (
-        selected_candidate.get("source_type") == "tweet"
-        or (
-            "tweet_id" in selected_candidate
-            and selected_candidate.get("source_type") != "news_article"
-        )
+    is_tweet = selected_candidate.get("source_type") == "tweet" or (
+        "tweet_id" in selected_candidate
+        and selected_candidate.get("source_type") != "news_article"
     )
     if not is_tweet:
         return None
@@ -256,8 +254,14 @@ class TweetCuratorAgent(BaseAgent):
         }
 
         target_tweet_id = state.get(KEY_TARGET_TWEET_ID)
-        if target_tweet_id:
-            selected_candidate = candidate_map.get(str(target_tweet_id)) or candidates[0]
+        target_article_url = state.get("target_article_url")
+        if target_tweet_id or target_article_url:
+            if target_tweet_id:
+                selected_candidate = (
+                    candidate_map.get(str(target_tweet_id)) or candidates[0]
+                )
+            else:
+                selected_candidate = candidates[0]
             selected_tweet_dict = _extract_tweet_dict(selected_candidate)
 
             rationale = decision.selection_rationale
@@ -271,7 +275,8 @@ class TweetCuratorAgent(BaseAgent):
             logger.info(
                 "Operator targeted item %s from %s (curator evaluation: %s).",
                 selected_candidate.get("id") or selected_candidate.get("tweet_id"),
-                selected_candidate.get("author_or_source") or selected_candidate.get("author_handle"),
+                selected_candidate.get("author_or_source")
+                or selected_candidate.get("author_handle"),
                 decision.status,
             )
             return {
@@ -282,10 +287,7 @@ class TweetCuratorAgent(BaseAgent):
                 KEY_RUNNER_UP_TWEETS: [],
             }
 
-        if (
-            decision.status == "NO_QUALIFIED_CANDIDATE"
-            or not decision.winner_id
-        ):
+        if decision.status == "NO_QUALIFIED_CANDIDATE" or not decision.winner_id:
             logger.info(
                 "Curator evaluated %d candidates: NO_QUALIFIED_CANDIDATE. Rationale: %s",
                 len(candidates),
@@ -316,7 +318,8 @@ class TweetCuratorAgent(BaseAgent):
         logger.info(
             "Curator selected %s from %s (out of %d candidates, %d runner-ups).",
             selected_candidate.get("id") or selected_candidate.get("tweet_id"),
-            selected_candidate.get("author_or_source") or selected_candidate.get("author_handle"),
+            selected_candidate.get("author_or_source")
+            or selected_candidate.get("author_handle"),
             len(candidates),
             len(runner_ups),
         )

@@ -13,6 +13,7 @@ Branches exactly as ``contracts/session-state-contract.md`` §4 specifies:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import inspect
 from collections.abc import AsyncGenerator
 from datetime import UTC, datetime
@@ -23,16 +24,19 @@ from google.adk.agents.invocation_context import InvocationContext
 from google.adk.events import Event, EventActions
 
 from src.agent.state import (
+    KEY_AI_DETECTION_SCORE,
     KEY_AUTO_PUBLISH,
     KEY_CANDIDATE_ITEMS,
     KEY_CANDIDATE_TWEETS,
     KEY_COMMENTARY,
+    KEY_COMMENTARY_RAW,
     KEY_CURATION_RATIONALE,
     KEY_DRY_RUN,
     KEY_ERROR,
     KEY_EXECUTION_STATUS,
     KEY_EXTRACTED_ARTICLE,
     KEY_FIRST_COMMENT,
+    KEY_HUMANIZE_STATUS,
     KEY_MONITORED_ACCOUNTS,
     KEY_MONITORED_FEEDS,
     KEY_PUBLICATION_RECORD,
@@ -42,6 +46,7 @@ from src.agent.state import (
     KEY_SELECTED_TWEET,
     STATUS_DRY_RUN,
     STATUS_FAILED,
+    STATUS_FAILED_HUMANIZATION,
     STATUS_SKIPPED,
     STATUS_SUCCESS,
     STATUS_USER_CANCELLED,
@@ -74,29 +79,18 @@ def preview_from_state(state: Any) -> dict[str, Any]:
     first_comment = state.get(KEY_FIRST_COMMENT) or {}
     asset = state.get(KEY_RENDERED_ASSET) or {}
     commentary = state.get(KEY_COMMENTARY) or {}
-    candidates = (
-        state.get(KEY_CANDIDATE_ITEMS)
-        or state.get(KEY_CANDIDATE_TWEETS)
-        or []
-    )
+    candidates = state.get(KEY_CANDIDATE_ITEMS) or state.get(KEY_CANDIDATE_TWEETS) or []
     monitored = (
-        state.get(KEY_MONITORED_FEEDS)
-        or state.get(KEY_MONITORED_ACCOUNTS)
-        or []
+        state.get(KEY_MONITORED_FEEDS) or state.get(KEY_MONITORED_ACCOUNTS) or []
     )
     rationale = str(state.get(KEY_CURATION_RATIONALE) or "")
     runner_ups = state.get(KEY_RUNNER_UP_TWEETS) or []
 
-    is_news_article = (
-        selected_item.get("source_type") == "news_article"
-        or bool(extracted)
+    is_news_article = selected_item.get("source_type") == "news_article" or bool(
+        extracted
     )
 
-    article_title = str(
-        extracted.get("title")
-        or selected_item.get("title")
-        or ""
-    )
+    article_title = str(extracted.get("title") or selected_item.get("title") or "")
     publication_name = str(
         extracted.get("publication_name")
         or selected_item.get("author_or_source")
@@ -110,11 +104,7 @@ def preview_from_state(state: Any) -> dict[str, Any]:
         or tweet.get("permalink")
         or ""
     )
-    item_id = str(
-        selected_item.get("id")
-        or tweet.get("tweet_id")
-        or ""
-    )
+    item_id = str(selected_item.get("id") or tweet.get("tweet_id") or "")
 
     return {
         "tweet": tweet,
@@ -129,9 +119,7 @@ def preview_from_state(state: Any) -> dict[str, Any]:
         "tweet_text": tweet.get("text", "") or selected_item.get("summary", ""),
         "tweet_id": item_id,
         "created_at": str(
-            tweet.get("created_at")
-            or selected_item.get("published_at")
-            or ""
+            tweet.get("created_at") or selected_item.get("published_at") or ""
         ),
         "candidate_pool_count": len(candidates),
         "monitored_accounts_count": len(monitored),
@@ -141,6 +129,14 @@ def preview_from_state(state: Any) -> dict[str, Any]:
         "article_title": article_title,
         "publication_name": publication_name,
         "first_comment": first_comment.get("formatted_text", ""),
+        "humanize_status": state.get(KEY_HUMANIZE_STATUS),
+        "ai_detection_score": state.get(KEY_AI_DETECTION_SCORE),
+        "raw_commentary": state.get(KEY_COMMENTARY_RAW),
+        "humanize_failed": (
+            state.get(KEY_HUMANIZE_STATUS) == "FAILED"
+            or state.get(KEY_EXECUTION_STATUS) == STATUS_FAILED_HUMANIZATION
+        ),
+        "error_message": state.get(KEY_ERROR),
     }
 
 
@@ -217,6 +213,17 @@ def render_editorial_review(preview: dict[str, Any], console: Any = None) -> str
     lines.append(f"  Screenshot: {image_path}")
     lines.append("")
 
+    if (
+        preview.get("humanize_status") == "SUCCESS"
+        or preview.get("ai_detection_score") is not None
+    ):
+        score = preview.get("ai_detection_score")
+        score_str = f"{score:.1f}%" if score is not None else "N/A"
+        lines.append("[AI DETECTION AUDIT]")
+        lines.append(f"  AI Probability Score: {score_str} [PASSED HUMANIZATION]")
+        lines.append("  Status: Transformed via HumanizeAI")
+        lines.append("")
+
     lines.append("[GENERATED COMMENTARY]")
     comm_text = preview.get("commentary_text") or "(No commentary generated)"
     for line in comm_text.splitlines():
@@ -230,20 +237,43 @@ def render_editorial_review(preview: dict[str, Any], console: Any = None) -> str
             lines.append(f"  {line}")
         lines.append("")
 
-    lines.append("-" * 80)
-    lines.append("[ACTIONS]")
-    lines.append("  [p] Publish to LinkedIn immediately")
-    lines.append("  [r] Regenerate commentary for current tweet")
-    if runner_ups:
-        first_r = runner_ups[0]
-        nxt_handle = first_r.get("author_handle", "")
-        if nxt_handle and not nxt_handle.startswith("@"):
-            nxt_handle = f"@{nxt_handle}"
-        lines.append(f"  [u] Select next runner-up tweet ({nxt_handle})")
+    if preview.get("humanize_failed"):
+        lines.append("-" * 80)
+        lines.append("⚠️  HUMANIZE-AI SERVICE WARNING: STRICT FAIL-SAFE ACTIVE")
+        lines.append("HumanizeAI web automation was unable to process this post.")
+        reason = (
+            preview.get("error_message") or "Navigation timeout or connection error"
+        )
+        lines.append(f"Reason: {reason}")
+        lines.append("")
+        lines.append(
+            "-- Original Commentary Draft (Unhumanized) -------------------------------------"
+        )
+        raw_c = preview.get("raw_commentary") or preview.get("commentary_text") or ""
+        for line in raw_c.splitlines():
+            lines.append(f"  {line}")
+        lines.append("-" * 80)
+        lines.append("How would you like to proceed?")
+        lines.append("  [p] Publish unhumanized commentary")
+        lines.append("  [r] Retry HumanizeAI automation")
+        lines.append("  [g] Generate new commentary from scratch")
+        lines.append("  [c] Cancel publication (default)")
+        lines.append("-" * 80)
     else:
-        lines.append("  [u] Select next runner-up tweet (None available)")
-    lines.append("  [c] Cancel and exit without publishing")
-    lines.append("-" * 80)
+        lines.append("-" * 80)
+        lines.append("[ACTIONS]")
+        lines.append("  [p] Publish to LinkedIn immediately")
+        lines.append("  [r] Regenerate commentary for current tweet")
+        if runner_ups:
+            first_r = runner_ups[0]
+            nxt_handle = first_r.get("author_handle", "")
+            if nxt_handle and not nxt_handle.startswith("@"):
+                nxt_handle = f"@{nxt_handle}"
+            lines.append(f"  [u] Select next runner-up tweet ({nxt_handle})")
+        else:
+            lines.append("  [u] Select next runner-up tweet (None available)")
+        lines.append("  [c] Cancel and exit without publishing")
+        lines.append("-" * 80)
 
     rendered = "\n".join(lines)
     if console is not None:
@@ -252,13 +282,20 @@ def render_editorial_review(preview: dict[str, Any], console: Any = None) -> str
 
 
 def default_confirm_prompt(preview: dict[str, Any]) -> str:
-    """Rich interactive prompt per cli-review-contract.md."""
+    """Rich interactive prompt per cli-recovery-contract.md."""
     from rich.console import Console
     from rich.prompt import Prompt
 
     console = Console()
     render_editorial_review(preview, console=console)
     try:
+        if preview.get("humanize_failed"):
+            return Prompt.ask(
+                "Selection",
+                choices=["p", "r", "g", "c"],
+                default="c",
+                console=console,
+            )
         return Prompt.ask(
             "Select action",
             choices=["p", "r", "u", "c"],
@@ -293,6 +330,9 @@ class LinkedInPublisherAgent(BaseAgent):
     capture_card: Any = None
     """``Callable[[dict], Awaitable[dict]]`` visual card renderer hook."""
 
+    humanize_step: Any = None
+    """``Callable[[dict], Awaitable[dict]]`` humanize transformation hook."""
+
     post_title: str | None = None
     _last_cancel_status: str = STATUS_USER_CANCELLED
 
@@ -314,7 +354,9 @@ class LinkedInPublisherAgent(BaseAgent):
     async def _publish(self, state: Any) -> dict[str, Any]:
         selected = state.get(KEY_SELECTED_TWEET) or state.get(KEY_SELECTED_ITEM)
         if not selected:
-            logger.debug("No selected tweet or item; publication step is a clean no-op.")
+            logger.debug(
+                "No selected tweet or item; publication step is a clean no-op."
+            )
             return {}
 
         asset = state.get(KEY_RENDERED_ASSET) or {}
@@ -333,20 +375,62 @@ class LinkedInPublisherAgent(BaseAgent):
 
         entry = self._build_entry(selected, commentary_text, state=state)
 
+        humanize_status = state.get(KEY_HUMANIZE_STATUS)
+        execution_status = state.get(KEY_EXECUTION_STATUS)
+        humanize_failed = (
+            humanize_status == "FAILED"
+            or execution_status == STATUS_FAILED_HUMANIZATION
+        )
+
+        if humanize_failed and bool(state.get(KEY_AUTO_PUBLISH)):
+            logger.warning(
+                "Auto-publish halted by strict fail-safe: HumanizeAI unavailable. Post held for manual review."
+            )
+            if self.ledger is not None:
+                with contextlib.suppress(Exception):
+                    self._record_outcome(entry, "PENDING_REVIEW")
+            return {
+                KEY_EXECUTION_STATUS: STATUS_FAILED_HUMANIZATION,
+                KEY_ERROR: (
+                    state.get(KEY_ERROR)
+                    or "Auto-publish halted by strict fail-safe: HumanizeAI unavailable. Post held for manual review."
+                ),
+            }
+
         if bool(state.get(KEY_DRY_RUN)) and bool(state.get(KEY_AUTO_PUBLISH)):
             return self._handle_dry_run(entry)
 
         if not bool(state.get(KEY_AUTO_PUBLISH)):
             while True:
-                current_selected = state.get(KEY_SELECTED_TWEET) or state.get(KEY_SELECTED_ITEM) or {}
+                current_selected = (
+                    state.get(KEY_SELECTED_TWEET) or state.get(KEY_SELECTED_ITEM) or {}
+                )
                 current_asset = state.get(KEY_RENDERED_ASSET) or {}
                 current_commentary = state.get(KEY_COMMENTARY) or {}
                 current_text = str(current_commentary.get("text") or "")
                 entry = self._build_entry(current_selected, current_text, state=state)
 
+                current_h_status = state.get(KEY_HUMANIZE_STATUS)
+                current_h_failed = (
+                    current_h_status == "FAILED"
+                    or state.get(KEY_EXECUTION_STATUS) == STATUS_FAILED_HUMANIZATION
+                )
+
                 action = await self._ask_for_action(state)
 
                 if action == "p":
+                    if current_h_failed:
+                        logger.warning(
+                            "[MANUAL BYPASS] Operator confirmed publication of unhumanized commentary."
+                        )
+                        raw_c = str(state.get(KEY_COMMENTARY_RAW) or current_text)
+                        current_text = raw_c
+                        if isinstance(current_commentary, dict):
+                            current_commentary["text"] = raw_c
+                        entry = self._build_entry(
+                            current_selected, current_text, state=state
+                        )
+
                     if bool(state.get(KEY_DRY_RUN)):
                         delta = self._handle_dry_run(entry)
                     else:
@@ -393,6 +477,21 @@ class LinkedInPublisherAgent(BaseAgent):
                     }
 
                 elif action == "r":
+                    if current_h_failed:
+                        logger.info(
+                            "Retrying HumanizeAI automation on operator request..."
+                        )
+                        if self.humanize_step is not None:
+                            try:
+                                h_delta = await self.humanize_step(state)
+                                if h_delta:
+                                    state.update(h_delta)
+                            except Exception as exc:
+                                logger.error("Humanize retry failed: %s", exc)
+                        else:
+                            logger.warning("No humanize step available to retry.")
+                        continue
+
                     logger.info(
                         "Regenerating commentary for tweet %s...", entry.tweet_id
                     )
@@ -403,6 +502,31 @@ class LinkedInPublisherAgent(BaseAgent):
                                 state.update(delta)
                         except Exception as exc:
                             logger.error("Commentary regeneration failed: %s", exc)
+                    else:
+                        logger.warning("No commentary generator available.")
+                    continue
+
+                elif action == "g":
+                    logger.info(
+                        "Generating new commentary from scratch on operator request..."
+                    )
+                    if self.commentary_generator is not None:
+                        try:
+                            c_delta = await self.commentary_generator(state)
+                            if c_delta:
+                                state.update(c_delta)
+                            if self.humanize_step is not None:
+                                try:
+                                    h_delta = await self.humanize_step(state)
+                                    if h_delta:
+                                        state.update(h_delta)
+                                except Exception as exc:
+                                    logger.error(
+                                        "Humanize step failed after generating new commentary: %s",
+                                        exc,
+                                    )
+                        except Exception as exc:
+                            logger.error("Fresh commentary generation failed: %s", exc)
                     else:
                         logger.warning("No commentary generator available.")
                     continue
@@ -520,7 +644,9 @@ class LinkedInPublisherAgent(BaseAgent):
                             comment_res = await client.create_comment(
                                 result.post_urn, first_comment_text
                             )
-                            first_comment_urn = getattr(comment_res, "comment_urn", None)
+                            first_comment_urn = getattr(
+                                comment_res, "comment_urn", None
+                            )
                             first_comment_status = "POSTED_API"
                             logger.info(
                                 "[LinkedIn] Main post published successfully: %s",
@@ -535,7 +661,9 @@ class LinkedInPublisherAgent(BaseAgent):
                                 "[LinkedIn] Automated comment unavailable (client lacks create_comment)."
                             )
                     except Exception as exc:
-                        logger.warning("[LinkedIn] Automated comment unavailable: %s", exc)
+                        logger.warning(
+                            "[LinkedIn] Automated comment unavailable: %s", exc
+                        )
                         fallback_banner = (
                             f"\n[LinkedIn] Main post published successfully: {result.post_urn}\n"
                             "[LinkedIn] Automated comment unavailable (insufficient API permissions).\n"
@@ -602,9 +730,8 @@ class LinkedInPublisherAgent(BaseAgent):
             else str(selected.get("curation_rationale") or "")
         )
 
-        is_article = (
-            selected_item.get("source_type") == "news_article"
-            or (bool(extracted) and not selected.get("tweet_id"))
+        is_article = selected_item.get("source_type") == "news_article" or (
+            bool(extracted) and not selected.get("tweet_id")
         )
 
         source_type = "news_article" if is_article else "tweet"
@@ -614,25 +741,13 @@ class LinkedInPublisherAgent(BaseAgent):
             or selected.get("permalink")
             or ""
         )
-        article_title = (
-            extracted.get("title")
-            or selected_item.get("title")
-            or None
-        )
-        tweet_id = str(
-            selected.get("tweet_id")
-            or selected_item.get("id")
-            or ""
-        )
+        article_title = extracted.get("title") or selected_item.get("title") or None
+        tweet_id = str(selected.get("tweet_id") or selected_item.get("id") or "")
         author_handle = str(
-            selected.get("author_handle")
-            or selected_item.get("author_or_source")
-            or ""
+            selected.get("author_handle") or selected_item.get("author_or_source") or ""
         )
         tweet_created_at = str(
-            selected.get("created_at")
-            or selected_item.get("published_at")
-            or ""
+            selected.get("created_at") or selected_item.get("published_at") or ""
         )
         tweet_text = str(
             selected.get("text")
@@ -640,11 +755,7 @@ class LinkedInPublisherAgent(BaseAgent):
             or selected_item.get("title")
             or ""
         )
-        tweet_url = str(
-            selected.get("permalink")
-            or source_url
-            or ""
-        )
+        tweet_url = str(selected.get("permalink") or source_url or "")
 
         return LedgerEntry(
             tweet_id=tweet_id,
@@ -716,7 +827,7 @@ class LinkedInPublisherAgent(BaseAgent):
                 return "c"
 
             action_str = str(res).lower().strip()
-            if action_str in {"p", "r", "u", "c"}:
+            if action_str in {"p", "r", "u", "g", "c"}:
                 if action_str == "c":
                     self._last_cancel_status = STATUS_USER_CANCELLED
                 return action_str
@@ -749,6 +860,7 @@ def create_publisher_agent(
     confirm_prompt: Any = None,
     commentary_generator: Any = None,
     capture_card: Any = None,
+    humanize_step: Any = None,
     name: str = PUBLISHER_AGENT_NAME,
 ) -> LinkedInPublisherAgent:
     """Build the publisher agent from application configuration."""
@@ -769,6 +881,7 @@ def create_publisher_agent(
         confirm_prompt=confirm_prompt,
         commentary_generator=commentary_generator,
         capture_card=capture_card,
+        humanize_step=humanize_step,
     )
 
 

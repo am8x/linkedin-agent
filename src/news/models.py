@@ -1,4 +1,5 @@
 """Domain models for RSS/Atom news feeds, candidate items, and article extraction."""
+
 from datetime import datetime
 from enum import StrEnum
 from pathlib import Path
@@ -17,9 +18,13 @@ class CandidateSourceType(StrEnum):
 class FeedConfig(BaseModel):
     """Configuration for an individual monitored website RSS/Atom feed."""
 
-    name: str = Field(description="Human-readable publication name (e.g. 'Ars Technica')")
+    name: str = Field(
+        description="Human-readable publication name (e.g. 'Ars Technica')"
+    )
     url: str = Field(description="Full HTTP/HTTPS URL of the RSS or Atom feed XML")
-    category: str | None = Field(default=None, description="Optional classification tag")
+    category: str | None = Field(
+        default=None, description="Optional classification tag"
+    )
     max_items_per_poll: int = Field(
         default=10, ge=1, le=50, description="Rate cap per poll"
     )
@@ -64,7 +69,12 @@ class ExtractedArticle(BaseModel):
     local_image_path: Path | None = Field(
         default=None, description="Local downloaded image path on disk"
     )
-    has_image: bool = Field(default=False, description="Whether a lead image is present")
+    has_image: bool = Field(
+        default=False, description="Whether a lead image is present"
+    )
+    image_credit: str | None = Field(
+        default=None, description="Image caption or attribution credits"
+    )
 
 
 class CardAsset(BaseModel):

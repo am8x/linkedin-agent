@@ -1,4 +1,5 @@
 """Unit tests for Playwright news card screenshot rendering."""
+
 from pathlib import Path
 
 import pytest
@@ -15,6 +16,7 @@ def test_build_card_html_with_image() -> None:
         domain="phoronix.com",
         formatted_date="Oct 18, 2026",
         image_data_uri="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+        image_credit="Image Credits:Tesla",
     )
     assert "Linux 6.14 Kernel Released" in html
     assert "Phoronix" in html
@@ -22,6 +24,7 @@ def test_build_card_html_with_image() -> None:
     assert "Oct 18, 2026" in html
     assert '<div class="media-container">' in html
     assert "data:image/png;base64" in html
+    assert '<div class="image-credit">Image Credits:Tesla</div>' in html
     assert '<div class="card no-image">' not in html
     assert '<div class="card ">' in html
 
@@ -159,5 +162,3 @@ async def test_card_capture_agent_delegates_to_news_renderer(tmp_path: Path) -> 
     assert "Quantum Supremacy Milestone" in fake_page.html
     assert "Nature" in fake_page.html
     assert "Dr. Quantum" in fake_page.html
-
-

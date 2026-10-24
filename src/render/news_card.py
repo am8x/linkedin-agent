@@ -135,11 +135,25 @@ CARD_HTML_TEMPLATE = """<!DOCTYPE html>
       display: flex;
       align-items: center;
       justify-content: center;
+      position: relative;
     }}
     .media-container img {{
       width: 100%;
       height: 100%;
       object-fit: cover;
+    }}
+    .image-credit {{
+      position: absolute;
+      bottom: 12px;
+      right: 16px;
+      background: rgba(12, 14, 20, 0.75);
+      border: 1px solid #1e2330;
+      backdrop-filter: blur(4px);
+      padding: 4px 10px;
+      border-radius: 6px;
+      font-size: 11px;
+      color: #94a3b8;
+      font-weight: 500;
     }}
     /* Typography fallback when no image exists */
     .card.no-image {{
@@ -200,6 +214,7 @@ def build_card_html(
     formatted_date: str = "",
     summary_excerpt: str = "",
     image_data_uri: str | None = None,
+    image_credit: str | None = None,
 ) -> str:
     """Compose self-contained HTML markup for the news card."""
     if not formatted_date:
@@ -216,17 +231,23 @@ def build_card_html(
             f'<div class="byline">'
             f'<span class="by-label">By</span> '
             f'<span class="author-name">{esc_author}</span>'
-            f'</div>'
+            f"</div>"
         )
     else:
         author_html = ""
 
     if image_data_uri:
         layout_class = ""
+        credit_html = (
+            f'<div class="image-credit">{html.escape(image_credit)}</div>'
+            if image_credit
+            else ""
+        )
         content_html = (
             f'<div class="media-container">'
             f'<img src="{image_data_uri}" alt="Article Lead Image" />'
-            f'</div>'
+            f"{credit_html}"
+            f"</div>"
         )
     else:
         layout_class = "no-image"
@@ -238,7 +259,7 @@ def build_card_html(
         content_html = (
             f'<div class="excerpt-panel">'
             f'<div class="summary-excerpt">{esc_excerpt}</div>'
-            f'</div>'
+            f"</div>"
         )
 
     return CARD_HTML_TEMPLATE.format(
@@ -300,7 +321,9 @@ class NewsCardRenderer:
             logger.debug("NewsCardRenderer Playwright browser initialized.")
         except Exception as exc:
             await self.stop()
-            raise CaptureError(f"Could not launch Playwright for news card: {exc}") from exc
+            raise CaptureError(
+                f"Could not launch Playwright for news card: {exc}"
+            ) from exc
 
     async def stop(self) -> None:
         """Tear down Playwright browser and context."""
@@ -363,16 +386,22 @@ class NewsCardRenderer:
         summary_excerpt: str = "",
         local_image_path: Path | str | None = None,
         article: ExtractedArticle | dict[str, Any] | None = None,
+        image_credit: str | None = None,
     ) -> RenderedAsset:
         """Render a dark-theme news card PNG asset and return the validated RenderedAsset."""
         if article is not None:
             if isinstance(article, dict):
                 title = title or str(article.get("title", ""))
-                publication_name = publication_name or str(article.get("publication_name", ""))
+                publication_name = publication_name or str(
+                    article.get("publication_name", "")
+                )
                 domain = domain or str(article.get("domain", ""))
                 author = author or article.get("author")
                 local_image_path = local_image_path or article.get("local_image_path")
-                summary_excerpt = summary_excerpt or str(article.get("full_text", ""))[:250]
+                summary_excerpt = (
+                    summary_excerpt or str(article.get("full_text", ""))[:250]
+                )
+                image_credit = image_credit or article.get("image_credit")
             elif isinstance(article, ExtractedArticle):
                 title = title or article.title
                 publication_name = publication_name or article.publication_name
@@ -380,6 +409,7 @@ class NewsCardRenderer:
                 author = author or article.author
                 local_image_path = local_image_path or article.local_image_path
                 summary_excerpt = summary_excerpt or article.full_text[:250]
+                image_credit = image_credit or article.image_credit
 
         image_data_uri = self._build_data_uri(local_image_path)
 
@@ -391,6 +421,7 @@ class NewsCardRenderer:
             formatted_date=formatted_date,
             summary_excerpt=summary_excerpt,
             image_data_uri=image_data_uri,
+            image_credit=image_credit,
         )
 
         if not self._started:
@@ -410,7 +441,9 @@ class NewsCardRenderer:
         try:
             await self._page.screenshot(path=str(target_path))
         except Exception as exc:
-            raise CaptureError(f"Failed to capture news card screenshot: {exc}") from exc
+            raise CaptureError(
+                f"Failed to capture news card screenshot: {exc}"
+            ) from exc
 
         if not target_path.exists():
             raise CaptureError(f"News card screenshot was not created at {target_path}")

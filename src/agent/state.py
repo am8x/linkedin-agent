@@ -20,6 +20,7 @@ ExecutionStatus = Literal[
     "SKIPPED",
     "USER_CANCELLED",
     "FAILED",
+    "FAILED_HUMANIZATION",
 ]
 
 STATUS_SUCCESS: ExecutionStatus = "SUCCESS"
@@ -29,6 +30,7 @@ STATUS_DRY_RUN: ExecutionStatus = "DRY_RUN"
 STATUS_SKIPPED: ExecutionStatus = "SKIPPED"
 STATUS_USER_CANCELLED: ExecutionStatus = "USER_CANCELLED"
 STATUS_FAILED: ExecutionStatus = "FAILED"
+STATUS_FAILED_HUMANIZATION: ExecutionStatus = "FAILED_HUMANIZATION"
 
 # State keys ---------------------------------------------------------------
 KEY_MONITORED_ACCOUNTS = "monitored_accounts"
@@ -48,10 +50,17 @@ KEY_CURATION_RATIONALE = "curation_rationale"
 KEY_RUNNER_UP_TWEETS = "runner_up_tweets"
 KEY_RENDERED_ASSET = "rendered_asset"
 KEY_COMMENTARY = "commentary"
+KEY_COMMENTARY_RAW = "raw_commentary"
+KEY_HUMANIZED_COMMENTARY = "humanized_commentary"
+KEY_AI_DETECTION_SCORE = "ai_detection_score"
+KEY_HUMANIZE_STATUS = "humanize_status"
 KEY_PUBLICATION_RECORD = "publication_record"
 KEY_EXECUTION_STATUS = "execution_status"
 KEY_ERROR = "error"
 KEY_TARGET_TWEET_ID = "target_tweet_id"
+KEY_TARGET_ARTICLE_URL = "target_article_url"
+KEY_TARGET_IMAGE_CAPTION = "target_image_caption"
+KEY_TARGET_IMAGE_CREDITS = "target_image_credits"
 
 # Derive the typed keys directly from the TypedDict contract so the two can
 # never drift apart.
@@ -62,6 +71,9 @@ PipelineSessionStateKeys: tuple[str, ...] = (
     "dry_run",
     "auto_publish",
     "target_tweet_id",
+    "target_article_url",
+    "target_image_caption",
+    "target_image_credits",
     "candidate_tweets",
     "eligible_tweets",
     "candidate_items",
@@ -74,6 +86,10 @@ PipelineSessionStateKeys: tuple[str, ...] = (
     "runner_up_tweets",
     "rendered_asset",
     "commentary",
+    "raw_commentary",
+    "humanized_commentary",
+    "ai_detection_score",
+    "humanize_status",
     "publication_record",
     "execution_status",
     "error",
@@ -96,6 +112,9 @@ class PipelineSessionState(TypedDict, total=False):
     dry_run: bool
     auto_publish: bool
     target_tweet_id: str | None
+    target_article_url: str | None
+    target_image_caption: str | None
+    target_image_credits: str | None
 
     # Stage 1: ingestion & filtering output
     candidate_tweets: list[dict[str, Any]]
@@ -117,6 +136,12 @@ class PipelineSessionState(TypedDict, total=False):
     commentary: dict[str, Any] | None
     first_comment: dict[str, Any] | None
 
+    # Stage 3.5: HumanizeAI transformation output
+    raw_commentary: str | None
+    humanized_commentary: str | None
+    ai_detection_score: float | None
+    humanize_status: str | None
+
     # Stage 4: publication & persistence output
     publication_record: dict[str, Any] | None
     execution_status: str
@@ -131,6 +156,9 @@ def new_session_state(
     dry_run: bool = False,
     auto_publish: bool = False,
     target_tweet_id: str | None = None,
+    target_article_url: str | None = None,
+    target_image_caption: str | None = None,
+    target_image_credits: str | None = None,
 ) -> PipelineSessionState:
     """Build the initial state dictionary handed to the ADK runner."""
     return PipelineSessionState(
@@ -140,6 +168,9 @@ def new_session_state(
         dry_run=dry_run,
         auto_publish=auto_publish,
         target_tweet_id=target_tweet_id,
+        target_article_url=target_article_url,
+        target_image_caption=target_image_caption,
+        target_image_credits=target_image_credits,
         candidate_tweets=[],
         eligible_tweets=[],
         candidate_items=[],
@@ -152,6 +183,10 @@ def new_session_state(
         runner_up_tweets=[],
         rendered_asset=None,
         commentary=None,
+        raw_commentary=None,
+        humanized_commentary=None,
+        ai_detection_score=None,
+        humanize_status=None,
         publication_record=None,
         execution_status="",
         error=None,
@@ -190,9 +225,11 @@ class PipelineError(RuntimeError):
 __all__ = [
     "ExecutionStatus",
     "KEY_AUTO_PUBLISH",
+    "KEY_AI_DETECTION_SCORE",
     "KEY_CANDIDATE_ITEMS",
     "KEY_CANDIDATE_TWEETS",
     "KEY_COMMENTARY",
+    "KEY_COMMENTARY_RAW",
     "KEY_CURATION_RATIONALE",
     "KEY_CURATOR_DECISION",
     "KEY_DRY_RUN",
@@ -201,6 +238,8 @@ __all__ = [
     "KEY_EXECUTION_STATUS",
     "KEY_EXTRACTED_ARTICLE",
     "KEY_FIRST_COMMENT",
+    "KEY_HUMANIZE_STATUS",
+    "KEY_HUMANIZED_COMMENTARY",
     "KEY_LOOKBACK_HOURS",
     "KEY_MONITORED_ACCOUNTS",
     "KEY_MONITORED_FEEDS",
@@ -215,6 +254,7 @@ __all__ = [
     "PipelineSessionStateKeys",
     "STATUS_DRY_RUN",
     "STATUS_FAILED",
+    "STATUS_FAILED_HUMANIZATION",
     "STATUS_NO_NEW_TWEETS",
     "STATUS_NO_QUALIFIED_CANDIDATE",
     "STATUS_SKIPPED",

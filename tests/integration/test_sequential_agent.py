@@ -76,6 +76,7 @@ class TestPipelineAssembly:
             "article_extraction_agent",
             "card_capture_agent",
             "commentary_agent",
+            "humanize_commentary_agent",
             "linkedin_publisher_agent",
         ]
 

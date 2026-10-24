@@ -1,4 +1,5 @@
 """Sanitized full-article body text extraction and lead image downloading."""
+
 import hashlib
 import logging
 import re
@@ -61,7 +62,13 @@ class ArticleExtractor:
             follow_redirects=True,
         )
 
-    async def extract(self, url: str, publication_name: str = "") -> ExtractedArticle:
+    async def extract(
+        self,
+        url: str,
+        publication_name: str = "",
+        image_query: str | None = None,
+        preferred_image_credit: str | None = None,
+    ) -> ExtractedArticle:
         """Extract sanitized full article body and download lead image."""
         client = await self._get_client()
         owns_client = self._client is None
@@ -85,12 +92,33 @@ class ArticleExtractor:
                 full_text="",
                 word_count=0,
                 has_image=False,
+                image_credit=preferred_image_credit,
             )
         finally:
             if owns_client:
                 await client.aclose()
 
         soup = BeautifulSoup(html_text, "lxml")
+
+        # Handle meta refresh redirects (common for shorteners like t.co)
+        refresh_tag = soup.find(
+            "meta", attrs={"http-equiv": re.compile(r"^refresh$", re.I)}
+        )
+        if refresh_tag and isinstance(refresh_tag, Tag) and refresh_tag.get("content"):
+            content_val = str(refresh_tag["content"])
+            match = re.search(r"url=['\"]?([^'\";\s]+)", content_val, re.I)
+            if match:
+                redirect_url = urllib.parse.urljoin(url, match.group(1).strip())
+                if redirect_url and redirect_url != url:
+                    logger.debug(
+                        "Following meta refresh from %s to %s", url, redirect_url
+                    )
+                    return await self.extract(
+                        redirect_url,
+                        publication_name=publication_name,
+                        image_query=image_query,
+                        preferred_image_credit=preferred_image_credit,
+                    )
 
         # Extract title
         title = ""
@@ -109,20 +137,25 @@ class ArticleExtractor:
 
         # Decompose ad and banner containers
         for element in soup.find_all(
-            lambda tag: tag.get("class")
-            and any(
-                AD_CLASS_PATTERN.search(c)
-                for c in (
-                    tag.get("class")
-                    if isinstance(tag.get("class"), list)
-                    else [tag.get("class")]
+            lambda tag: (
+                tag.get("class")
+                and any(
+                    AD_CLASS_PATTERN.search(c)
+                    for c in (
+                        tag.get("class")
+                        if isinstance(tag.get("class"), list)
+                        else [tag.get("class")]
+                    )
                 )
             )
         ):
             element.decompose()
 
         # Resolve lead image URL before removing body containers
-        lead_image_url = self._resolve_lead_image_url(soup, url)
+        lead_image_url, extracted_credit = self._resolve_lead_image_url(
+            soup, url, image_query=image_query
+        )
+        image_credit = preferred_image_credit or extracted_credit
 
         # Extract main text
         full_text = self._extract_main_text(soup)
@@ -144,7 +177,13 @@ class ArticleExtractor:
             if not isinstance(meta_tag, Tag):
                 continue
             attr_name = meta_tag.get("name") or meta_tag.get("property")
-            if attr_name in ("author", "article:author", "twitter:creator", "dc.creator", "byl"):
+            if attr_name in (
+                "author",
+                "article:author",
+                "twitter:creator",
+                "dc.creator",
+                "byl",
+            ):
                 candidate_content = meta_tag.get("content")
                 if candidate_content and isinstance(candidate_content, str):
                     candidate_author = candidate_content.strip()
@@ -163,30 +202,82 @@ class ArticleExtractor:
             lead_image_url=lead_image_url if has_image else None,
             local_image_path=local_image_path,
             has_image=has_image,
+            image_credit=image_credit,
         )
 
-    def _resolve_lead_image_url(self, soup: BeautifulSoup, base_url: str) -> str | None:
-        """Inspect Open Graph, Twitter, and prominent body img tags for lead image."""
+    def _resolve_lead_image_url(
+        self, soup: BeautifulSoup, base_url: str, image_query: str | None = None
+    ) -> tuple[str | None, str | None]:
+        """Inspect Open Graph, Twitter, and figure/img tags for lead image and credit."""
+        image_credit: str | None = None
+
+        if image_query:
+            query_lower = image_query.lower()
+            for fig in soup.find_all("figure"):
+                caption = fig.find("figcaption")
+                cap_text = caption.get_text(strip=True) if caption else ""
+                img = fig.find("img")
+                if img:
+                    alt_text = str(img.get("alt") or "")
+                    src_val = str(img.get("src") or img.get("data-src") or "")
+                    if (
+                        query_lower in cap_text.lower()
+                        or query_lower in alt_text.lower()
+                        or query_lower in src_val.lower()
+                    ):
+                        match = re.search(r"(Image Credits?:?\s*.*)", cap_text, re.I)
+                        if match:
+                            image_credit = match.group(1).strip()
+                        elif cap_text:
+                            image_credit = cap_text.strip()
+                        clean_src = (
+                            src_val.split("?")[0]
+                            if "?" in src_val and "resize=" not in src_val
+                            else src_val
+                        )
+                        return urllib.parse.urljoin(
+                            base_url, clean_src.strip()
+                        ), image_credit
+
+        # Check figures for any figcaption with Image Credits
+        for fig in soup.find_all("figure"):
+            caption = fig.find("figcaption")
+            if caption:
+                cap_text = caption.get_text(strip=True)
+                match = re.search(r"(Image Credits?:?\s*.*)", cap_text, re.I)
+                if match:
+                    image_credit = match.group(1).strip()
+                    break
+
         og_img = soup.find("meta", property="og:image")
         if og_img and isinstance(og_img, Tag) and og_img.get("content"):
-            return urllib.parse.urljoin(base_url, str(og_img["content"]).strip())
+            return urllib.parse.urljoin(
+                base_url, str(og_img["content"]).strip()
+            ), image_credit
 
         tw_img = soup.find("meta", attrs={"name": "twitter:image"}) or soup.find(
             "meta", attrs={"name": "twitter:image:src"}
         )
         if tw_img and isinstance(tw_img, Tag) and tw_img.get("content"):
-            return urllib.parse.urljoin(base_url, str(tw_img["content"]).strip())
+            return urllib.parse.urljoin(
+                base_url, str(tw_img["content"]).strip()
+            ), image_credit
 
         # Check body article img tag
         article_elem = soup.find("article") or soup.find("main")
         if article_elem and isinstance(article_elem, Tag):
             for img in article_elem.find_all("img"):
                 src = img.get("src")
-                if not isinstance(src, str) or src.startswith("data:") or "pixel" in src or "icon" in src:
+                if (
+                    not isinstance(src, str)
+                    or src.startswith("data:")
+                    or "pixel" in src
+                    or "icon" in src
+                ):
                     continue
-                return urllib.parse.urljoin(base_url, src.strip())
+                return urllib.parse.urljoin(base_url, src.strip()), image_credit
 
-        return None
+        return None, image_credit
 
     def _extract_main_text(self, soup: BeautifulSoup) -> str:
         """Extract complete, clean paragraph text without artificial caps."""
@@ -194,7 +285,9 @@ class ArticleExtractor:
             soup.find("article")
             or soup.find("main")
             or soup.find(name=None, attrs={"role": "main"})
-            or soup.find(class_=re.compile(r"(post|article|entry|story)[_-]content", re.I))
+            or soup.find(
+                class_=re.compile(r"(post|article|entry|story)[_-]content", re.I)
+            )
             or soup.find(class_=re.compile(r"(post|article|entry|story)[_-]body", re.I))
         )
 

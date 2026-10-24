@@ -1,10 +1,8 @@
-"""Unit tests for StyleGuardrail: deterministic detection of banned words, emojis, hashtags, em dashes."""
+"""Unit tests for StyleGuardrail: basic platform sanity checks (length, handles, URLs)."""
 
 import pytest
 
-from src.agent.guardrails import (
-    StyleGuardrail,
-)
+from src.agent.guardrails import StyleGuardrail
 
 
 class TestStyleGuardrail:
@@ -24,85 +22,60 @@ class TestStyleGuardrail:
         assert result.is_valid is True
         assert len(result.violations) == 0
 
-    def test_detects_banned_buzzwords_case_insensitively(
+    def test_allows_technical_words_without_banned_word_violations(
         self, guardrail: StyleGuardrail
     ) -> None:
         text = (
-            "Let's delve into this game-changer framework.\n\n"
-            "It offers a seamless and robust landscape for developers.\n\n"
-            "I am thrilled to share this journey."
+            "Infrastructure scaling is the core bottleneck of distributed systems.\n\n"
+            "Fundamental latency limits cannot be solved by simply adding more nodes.\n\n"
+            "Measure your systems directly."
         )
         result = guardrail.validate(text)
-        assert result.is_valid is False
-        violation_types = [v.violation_type for v in result.violations]
-        assert "BANNED_WORD" in violation_types
-        details = " ".join(v.detail.lower() for v in result.violations)
-        assert "delve" in details
-        assert "game-changer" in details
-        assert "seamless" in details
-        assert "robust" in details
-        assert "landscape" in details
-        assert "thrilled" in details
-        assert "journey" in details
+        assert result.is_valid is True
+        assert len(result.violations) == 0
 
-    def test_detects_emojis(self, guardrail: StyleGuardrail) -> None:
+    def test_allows_flexible_paragraph_counts(self, guardrail: StyleGuardrail) -> None:
+        single_p = (
+            "This is a single paragraph that meets character minimums and passes "
+            "without rigid paragraph count constraints."
+        )
+        res_p = guardrail.validate(single_p)
+        assert res_p.is_valid is True
+
+        four_p = (
+            "P1 is here.\n\n"
+            "P2 is here.\n\n"
+            "P3 is here.\n\n"
+            "P4 brings the total length up beyond twenty characters easily."
+        )
+        res_four = guardrail.validate(four_p)
+        assert res_four.is_valid is True
+
+    def test_detects_handles(self, guardrail: StyleGuardrail) -> None:
         text = (
-            "Here is a great engineering pattern 🚀\n\n"
-            "It improves uptime significantly 👍.\n\n"
-            "Try it in production today."
+            "Great thoughts from @karpathy on autonomous driving.\n\n"
+            "The model architecture is cleaner than ever."
         )
-        result = guardrail.validate(text)
-        assert result.is_valid is False
-        assert any(v.violation_type == "EMOJI" for v in result.violations)
+        res = guardrail.validate(text)
+        assert res.is_valid is False
+        assert any(v.violation_type == "HANDLE" for v in res.violations)
 
-    def test_detects_hashtags(self, guardrail: StyleGuardrail) -> None:
+    def test_detects_outbound_urls(self, guardrail: StyleGuardrail) -> None:
         text = (
-            "Building distributed systems takes care.\n\n"
-            "Check out these MySQL query optimizations that cut latency by 92%.\n\n"
-            "More updates coming soon. #AI #Tech #Engineering"
+            "Check out our new tool here: https://example.com/demo for all the details.\n\n"
+            "It runs reliably in production."
         )
-        result = guardrail.validate(text)
-        assert result.is_valid is False
-        assert any(v.violation_type == "HASHTAG" for v in result.violations)
+        res = guardrail.validate(text)
+        assert res.is_valid is False
+        assert any(v.violation_type == "OUTBOUND_URL" for v in res.violations)
 
-    def test_detects_em_dashes_and_double_hyphens(
-        self, guardrail: StyleGuardrail
-    ) -> None:
-        text_with_em_dash = (
-            "Engineering is about trade-offs — not hype.\n\n"
-            "Our automated remediation ladder reduced MTTR from 60m to 5m.\n\n"
-            "Keep the architecture simple."
-        )
-        result = guardrail.validate(text_with_em_dash)
-        assert result.is_valid is False
-        assert any(v.violation_type == "EM_DASH" for v in result.violations)
-
-        text_with_double_hyphen = (
-            "Engineering is about trade-offs -- not hype.\n\n"
-            "Our automated remediation ladder reduced MTTR from 60m to 5m.\n\n"
-            "Keep the architecture simple."
-        )
-        result2 = guardrail.validate(text_with_double_hyphen)
-        assert result2.is_valid is False
-        assert any(v.violation_type == "EM_DASH" for v in result2.violations)
-
-    def test_detects_length_and_paragraph_structure(
-        self, guardrail: StyleGuardrail
-    ) -> None:
-        # Too short
-        too_short = "Too brief."
+    def test_detects_length_bounds(self, guardrail: StyleGuardrail) -> None:
+        too_short = "Brief"
         res_short = guardrail.validate(too_short)
         assert res_short.is_valid is False
         assert any(v.violation_type == "LENGTH" for v in res_short.violations)
 
-        # Single paragraph (needs 2-3)
-        single_p = "This is a single paragraph that is long enough to meet character minimums but fails the paragraph layout rule."
-        res_p = guardrail.validate(single_p)
-        assert res_p.is_valid is False
-        assert any(v.violation_type == "PARAGRAPH_COUNT" for v in res_p.violations)
-
-        # 4 paragraphs (too many)
-        four_p = "P1\n\nP2\n\nP3\n\nP4 which brings the total length up beyond twenty characters easily."
-        res_four = guardrail.validate(four_p)
-        assert res_four.is_valid is False
-        assert any(v.violation_type == "PARAGRAPH_COUNT" for v in res_four.violations)
+        too_long = "a" * 3001
+        res_long = guardrail.validate(too_long)
+        assert res_long.is_valid is False
+        assert any(v.violation_type == "LENGTH" for v in res_long.violations)

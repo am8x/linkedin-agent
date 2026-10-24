@@ -131,9 +131,8 @@ class CardCaptureAgent(BaseAgent):
             headline = extracted.get("title") or headline
             pub_name = extracted.get("publication_name") or pub_name
 
-        author = (
-            extracted.get("author")
-            or selected_item.get("raw_payload", {}).get("author")
+        author = extracted.get("author") or selected_item.get("raw_payload", {}).get(
+            "author"
         )
 
         try:
@@ -154,9 +153,7 @@ class CardCaptureAgent(BaseAgent):
             logger.error(message)
             return {KEY_ERROR: message, KEY_EXECUTION_STATUS: STATUS_FAILED}
         except Exception as exc:
-            message = (
-                f"News card capture failed for item {item_id}: {type(exc).__name__}: {exc}"
-            )
+            message = f"News card capture failed for item {item_id}: {type(exc).__name__}: {exc}"
             logger.exception(message)
             return {KEY_ERROR: message, KEY_EXECUTION_STATUS: STATUS_FAILED}
 

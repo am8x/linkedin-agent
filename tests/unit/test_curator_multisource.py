@@ -1,4 +1,5 @@
 """Unit tests for multi-source cross-channel candidate curation in TweetCuratorAgent."""
+
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
@@ -45,13 +46,25 @@ def _make_candidate_item(
 @pytest.mark.asyncio
 async def test_curator_selects_article_winner() -> None:
     tweet1 = _make_candidate_item(
-        "tweet_1", CandidateSourceType.TWEET, "Tweet about agentic coding", "@karpathy", 2.0
+        "tweet_1",
+        CandidateSourceType.TWEET,
+        "Tweet about agentic coding",
+        "@karpathy",
+        2.0,
     )
     article1 = _make_candidate_item(
-        "art_1", CandidateSourceType.NEWS_ARTICLE, "SQLite 3.48 Concurrency", "Ars Technica", 1.0
+        "art_1",
+        CandidateSourceType.NEWS_ARTICLE,
+        "SQLite 3.48 Concurrency",
+        "Ars Technica",
+        1.0,
     )
     tweet2 = _make_candidate_item(
-        "tweet_2", CandidateSourceType.TWEET, "Compute cluster power grid bottlenecks", "@sama", 3.0
+        "tweet_2",
+        CandidateSourceType.TWEET,
+        "Compute cluster power grid bottlenecks",
+        "@sama",
+        3.0,
     )
 
     candidates = [article1, tweet1, tweet2]
@@ -110,10 +123,18 @@ async def test_curator_selects_article_winner() -> None:
 @pytest.mark.asyncio
 async def test_curator_selects_tweet_winner() -> None:
     tweet1 = _make_candidate_item(
-        "tweet_1", CandidateSourceType.TWEET, "Tweet about agentic coding", "@karpathy", 2.0
+        "tweet_1",
+        CandidateSourceType.TWEET,
+        "Tweet about agentic coding",
+        "@karpathy",
+        2.0,
     )
     article1 = _make_candidate_item(
-        "art_1", CandidateSourceType.NEWS_ARTICLE, "SQLite 3.48 Concurrency", "Ars Technica", 1.0
+        "art_1",
+        CandidateSourceType.NEWS_ARTICLE,
+        "SQLite 3.48 Concurrency",
+        "Ars Technica",
+        1.0,
     )
 
     candidates = [article1, tweet1]
@@ -151,7 +172,11 @@ async def test_curator_selects_tweet_winner() -> None:
 @pytest.mark.asyncio
 async def test_curator_no_qualified_candidates() -> None:
     article1 = _make_candidate_item(
-        "art_1", CandidateSourceType.NEWS_ARTICLE, "Low quality article", "Spam Daily", 1.0
+        "art_1",
+        CandidateSourceType.NEWS_ARTICLE,
+        "Low quality article",
+        "Spam Daily",
+        1.0,
     )
 
     async def fake_evaluator(

@@ -7,6 +7,7 @@ agents never guess at a value's type or presence.
 
 from __future__ import annotations
 
+import contextlib
 import os
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -100,7 +101,9 @@ class FeedItemConfig(_Base):
     def _validate_url(cls, value: str) -> str:
         cleaned = value.strip()
         if not (cleaned.startswith("http://") or cleaned.startswith("https://")):
-            raise ValueError(f"feed url must start with http:// or https://: {cleaned!r}")
+            raise ValueError(
+                f"feed url must start with http:// or https://: {cleaned!r}"
+            )
         return cleaned
 
 
@@ -166,6 +169,26 @@ class StorageConfig(_Base):
     db_path: Path = Path("state/sidekick.db")
 
 
+class HumanizeConfig(_Base):
+    """Playwright HumanizeAI automation settings."""
+
+    enabled: bool = True
+    headless: bool = True
+    timeout_seconds: float = Field(default=30.0, ge=5.0, le=120.0)
+    detector_url: str = Field(default="https://www.humanizeai.pro/detector")
+    humanize_url: str = Field(default="https://www.humanizeai.pro/")
+    auto_retry: bool = True
+    retry_cooldown_seconds: float = Field(default=2.0, ge=0.5, le=10.0)
+
+    @field_validator("detector_url", "humanize_url")
+    @classmethod
+    def _validate_url(cls, value: str) -> str:
+        cleaned = value.strip()
+        if not (cleaned.startswith("http://") or cleaned.startswith("https://")):
+            raise ValueError(f"url must start with http:// or https://: {cleaned!r}")
+        return cleaned
+
+
 class LoggingConfig(_Base):
     """Structured logging settings."""
 
@@ -228,6 +251,7 @@ class AppConfig(_Base):
     agent: AgentConfig = Field(default_factory=AgentConfig)
     scheduler: SchedulerConfig = Field(default_factory=SchedulerConfig)
     storage: StorageConfig = Field(default_factory=StorageConfig)
+    humanize: HumanizeConfig = Field(default_factory=HumanizeConfig)
     logging: LoggingConfig = Field(default_factory=LoggingConfig)
     secrets: Secrets = Field(default_factory=Secrets)
 
@@ -333,6 +357,39 @@ def load_config(
         except ValueError:
             pass
 
+    humanize_dict = dict(raw.get("humanize") or {})
+    env_humanize_enabled = resolved_source.get("HUMANIZE_ENABLED")
+    if env_humanize_enabled is not None and env_humanize_enabled.strip():
+        val = env_humanize_enabled.strip().lower()
+        if val in {"true", "1", "yes", "on"}:
+            humanize_dict["enabled"] = True
+        elif val in {"false", "0", "no", "off"}:
+            humanize_dict["enabled"] = False
+
+    env_humanize_headless = resolved_source.get("HUMANIZE_HEADLESS")
+    if env_humanize_headless is not None and env_humanize_headless.strip():
+        val = env_humanize_headless.strip().lower()
+        if val in {"true", "1", "yes", "on"}:
+            humanize_dict["headless"] = True
+        elif val in {"false", "0", "no", "off"}:
+            humanize_dict["headless"] = False
+
+    env_humanize_timeout = resolved_source.get("HUMANIZE_TIMEOUT_SECONDS")
+    if env_humanize_timeout is not None and env_humanize_timeout.strip():
+        with contextlib.suppress(ValueError):
+            humanize_dict["timeout_seconds"] = float(env_humanize_timeout.strip())
+
+    env_humanize_detector_url = resolved_source.get("HUMANIZE_DETECTOR_URL")
+    if env_humanize_detector_url is not None and env_humanize_detector_url.strip():
+        humanize_dict["detector_url"] = env_humanize_detector_url.strip()
+
+    env_humanize_url = resolved_source.get("HUMANIZE_URL")
+    if env_humanize_url is not None and env_humanize_url.strip():
+        humanize_dict["humanize_url"] = env_humanize_url.strip()
+
+    if humanize_dict:
+        raw["humanize"] = humanize_dict
+
     try:
         return AppConfig.model_validate(raw)
     except ValidationError as exc:
@@ -346,6 +403,7 @@ __all__ = [
     "DEFAULT_CONFIG_PATH",
     "DEFAULT_PROMPT_TEMPLATE",
     "FeedItemConfig",
+    "HumanizeConfig",
     "LoggingConfig",
     "NewsConfig",
     "RenderConfig",

@@ -55,6 +55,7 @@ Thumbs.db
 *.bak
 .vscode/
 .idea/
+scratch/
 
 # Agent Logs and Runtime Caches
 .system_generated/

@@ -86,7 +86,7 @@ class FakeArticleExtractor:
         self.urls_seen: list[str] = []
 
     async def extract(
-        self, url: str, publication_name: str = ""
+        self, url: str, publication_name: str = "", **kwargs: Any
     ) -> ExtractedArticle:
         self.urls_seen.append(url)
         if self.article is not None:
@@ -481,7 +481,9 @@ class TestMultiSourcePipeline:
         """[u] switches from curated article to runner-up tweet and renders tweet card."""
         ms_config = _make_multisource_config(config)
 
-        tweet = _make_tweet("1002", "sama", "Tweet about cluster recovery.", hours_ago=2)
+        tweet = _make_tweet(
+            "1002", "sama", "Tweet about cluster recovery.", hours_ago=2
+        )
         article = _make_article_candidate("art_sqlite_2", hours_ago=1)
 
         fetcher = FakeFetcher([tweet])
@@ -656,3 +658,56 @@ class TestMultiSourcePipeline:
         selected = result.get(KEY_SELECTED_ITEM)
         assert selected is not None
         assert selected["id"] == "art_fresh_new"
+
+    async def test_multisource_direct_article_targeting(
+        self,
+        config: AppConfig,
+        pipeline_components: PipelineComponents,
+        tmp_path: Path,
+    ) -> None:
+        """Targeting a specific article URL processes that exact article end-to-end."""
+        target_url = (
+            "https://techcrunch.com/2026/10/15/tesla-reveals-spacex-powered-roadster/"
+        )
+        fake_article = ExtractedArticle(
+            url=target_url,
+            title="Tesla reveals SpaceX-powered Roadster that flies",
+            publication_name="TechCrunch",
+            domain="techcrunch.com",
+            author="Sean O'Kane",
+            full_text="Tesla revealed its redesigned second-generation Roadster with SpaceX thrusters.",
+            word_count=10,
+            has_image=True,
+            image_credit="Image Credits:Tesla",
+        )
+        fake_extractor = FakeArticleExtractor(article=fake_article)
+        fake_page = FakePage(width=1200, height=800)
+        news_renderer = NewsCardRenderer(
+            output_dir=tmp_path / "screenshots", page=fake_page
+        )
+
+        components = dataclasses.replace(
+            pipeline_components,
+            news_renderer_factory=lambda: news_renderer,
+            article_extractor=fake_extractor,
+            confirm_prompt=lambda preview: "p",
+        )
+
+        pipeline = build_pipeline(config, components=components)
+        state = build_initial_state(
+            config,
+            dry_run=True,
+            target_article_url=target_url,
+            target_image_caption="Tesla roadster event",
+            target_image_credits="Image Credits:Tesla",
+        )
+
+        result = await run_pipeline(pipeline, state)
+
+        assert result.status == STATUS_DRY_RUN
+        selected = result.get(KEY_SELECTED_ITEM)
+        assert selected is not None
+        assert selected["url"] == target_url
+        extracted = result.get(KEY_EXTRACTED_ARTICLE)
+        assert extracted is not None
+        assert extracted["image_credit"] == "Image Credits:Tesla"

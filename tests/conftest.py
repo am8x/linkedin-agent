@@ -332,14 +332,46 @@ async def _default_fake_curator(
             CandidateEvaluation(
                 candidate_id=str(c.get("tweet_id") or c.get("id", "")),
                 tweet_id=str(c.get("tweet_id") or c.get("id", "")),
-                author_handle=str(c.get("author_handle") or c.get("author_or_source", "")),
-                author_or_source=str(c.get("author_or_source") or c.get("author_handle", "")),
+                author_handle=str(
+                    c.get("author_handle") or c.get("author_or_source", "")
+                ),
+                author_or_source=str(
+                    c.get("author_or_source") or c.get("author_handle", "")
+                ),
                 relevance_score=9,
                 evaluation_notes="Relevant candidate",
             )
             for c in candidates
         ],
     )
+
+
+class FakeHumanizeBrowserFactory:
+    """Mock Chromium browser factory returning a fake Page preventing network calls to humanizeai.pro in tests."""
+
+    def __init__(self) -> None:
+        from unittest.mock import AsyncMock, MagicMock
+
+        page = MagicMock()
+        page.goto = AsyncMock()
+        page.content = AsyncMock(
+            return_value="<div class='score'>AI Likelihood: 12.0%</div>"
+        )
+        page.evaluate = AsyncMock(
+            return_value="Clean humanized commentary text output for testing."
+        )
+        locator = MagicMock()
+        locator.first = locator
+        locator.wait_for = AsyncMock()
+        locator.click = AsyncMock()
+        locator.fill = AsyncMock()
+        locator.is_visible = AsyncMock(return_value=True)
+        page.locator = MagicMock(return_value=locator)
+
+        self.page = page
+
+    async def __call__(self) -> Any:
+        return self.page
 
 
 @pytest.fixture()
@@ -362,4 +394,5 @@ def pipeline_components(
         linkedin_client=linkedin_client,
         publisher_factory=FakePublisher,
         confirm_prompt=lambda preview: True,
+        humanize_browser_factory=FakeHumanizeBrowserFactory(),
     )

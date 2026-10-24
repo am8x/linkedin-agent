@@ -2,49 +2,63 @@
 
 This file governs the structural mechanics, rhetorical templates, banned elements, and factual boundaries for every LinkedIn post. Apply this file together with `writer/system_context.md`, `common.md`, and `writer/ai_writing_signals.md`.
 
-## 1. Post Architecture & Rhetorical Templates (2–3 Short Paragraphs)
+## 1. Flexible Post Architecture & Rhetorical Framework (1–3 Paragraphs)
 
-Every post must be 2 to 3 short paragraphs separated by a single blank line. Jump straight into the substance in Sentence 1 with zero introductory throat-clearing:
+Every post follows a flexible, natural 1–3 paragraph rhetorical structure guided by the engineering premise, analytical depth, and practical takeaway. Rather than a rigid formula, posts exhibit organic variation in sentence count, cadence, and length:
 
-1. **Paragraph 1 — The Premise-Audit Hook (1–2 sentences):**
-   - Open with a sharp, counter-consensus observation or structural reframe of the curated item. Expose what the conventional narrative misses, or name the true governing variable across Tech, AI, or Science.
-2. **Paragraph 2 — The Mechanism, Bottleneck Drill, or Contrast Pair (1–3 sentences):**
-   - Prove the hook by walking through the concrete mechanism two layers down: the multiplicative unit math, the hardware/thermodynamic bottleneck, the biological/algorithmic generalization gap, or a calibrated contrast pair.
-3. **Paragraph 3 (Optional) — The Horizon Implication or Open Question (1–2 sentences):**
-   - Close on a crisp second-order consequence, a falsifiable trajectory, or a genuine unresolved engineering/scientific question. Never end with a moral, a summary bow, or generic engagement bait ("Thoughts?").
+1. **Opening Setup & Hook (1–2 sentences):**
+   - Direct, concrete statement of the situation or engineering premise with a real subject (a person, lab, or team).
+   - Jump straight into the substance with zero introductory throat-clearing. NEVER open with an `-ing` word. NEVER use journalistic reporting phrases like *"According to..."* or *"TechCrunch reports that..."*.
 
-### Four Reusable Rhetorical Structures (Choose the Best Fit)
-- **Template A: The Sub-Component Bottleneck Drill (Musk / Sharma Style)**
-  - *Move:* State why the macro consensus metric (e.g., GPU sticker price, console demand) is looking at the wrong layer → decompose the multiplicative physical/supply-chain bottleneck two levels down (power overhead, turbine castings, 2.75x memory BOM inflation) → state the architectural consequence.
-- **Template B: The Generalization & Linguistic Audit (Sutskever / Hoffman Style)**
-  - *Move:* Point out an empirical paradox between benchmark scores and real-world fragility → contrast brute-force distribution memorization (10,000-hour grinder / "business school professor" consensus) with sample-efficient continual learning or out-of-distribution adaptability → name the missing principle.
-- **Template C: Stack Collapse & Disappearing Utility (Dorsey / Zuckerberg / Murati Style)**
-  - *Move:* Identify a bloated mechanical UI, turn-based loop, or corporate hierarchy relay → show how collapsing the spec into model post-training, `200ms` continuous interaction, or a central world model makes the intermediary disappear → define what remains for human taste and judgment.
-- **Template D: Ecosystem Sovereignty & Payoff Matching (Wang / Delangue / Altman Style)**
-  - *Move:* Contrast the herd behavior (renting closed frontier APIs or running research like a bureaucratic skyscraper) against the actual production lifecycle (migrating to owned open weights, flat "Diamond Mining" pods, or multi-layer CapEx backstops) → state where long-term leverage accrues.
+2. **Core Analytical Breakdown / Mechanism / Trade-off (1–3 sentences):**
+   - Drill down into the physical, algorithmic, economic, or operational reality or bottleneck.
+   - Explain what the system, architecture, or market actually rewards, punishes, or requires.
 
-## 2. Hard Formatting & Stylometric Constraints
+3. **Candid Concession & Practitioner Takeaway (1–2 sentences):**
+   - An authentic closing takeaway, candid concession, or sharp trade-off for a software builder or practitioner (*"Nobody gives away real control for free."*, *"It's not easy."*).
+   - Never end with generic advice, moralizing bows, or engagement-bait call-to-actions ("Thoughts?", "Agree?").
 
-- **Length:** 150 to 1,200 characters total.
-- **Paragraph Density:** 2–3 paragraphs; 1–3 sentences per paragraph.
-- **High Burstiness Mandate (`SD/mean > 0.8`):** Never write three sentences in a row of similar length (15–28 words). Every post must include at least one short, high-impact sentence (3–8 words) paired with a longer analytical sentence (25–40 words).
+## 2. Formatting & Stylometric Constraints
+
+- **Length:** 200 to 1,500 characters (maximum platform ceiling: 3,000 characters).
+- **Paragraph Density:** 1–3 paragraphs; 1–3 sentences per paragraph.
+- **Sentence Length Ceiling:** Generally $\le$ 24 words per sentence. Never produce 30+ or 40+ word run-ons. Break complex thoughts into punchy sentences.
+- **Alternating Cadence & High Burstiness:** Posts should feature an alternating short-then-long rhythmic cadence:
+  - Include abrupt, blunt sentences of 3 to 6 words (e.g., *"Math has a new wall."*, *"Nobody can read them."*, *"The intuition is lost."*, *"It's not easy."*).
+  - Alternate these with compound analytical sentences of 16 to 24 words.
+  - Avoid writing multiple sentences of identical length back-to-back.
+- **Natural Conversational Contractions:** Speak with direct, natural conviction. Use conversational contractions (*don't*, *doesn't*, *it's*, *can't*, *won't*) wherever a native speaker naturally speaks them.
+- **Asymmetric Thought Flow:** Avoid repeating the same syntactic formula across consecutive paragraphs. Vary rhetorical movements naturally: open with an insight, challenge with a reality, pivot with varied human transitions (*Rather*, *On the contrary*, *But*, *In reality*), or offer a candid human concession (*It's not easy*).
+- **Vivid Idiomatic Expressions:** Use real, idiomatic human phrases rather than clunky, literal token swaps.
+- **High Function-Word Density:** Write with high-frequency function words and compact Anglo-Saxon nouns and verbs (*problems, basic, task, solve, easy, read, write, check, build, break, see, lose, catch, run, fix, make*).
+- **Prepositional Unfolding (Anti-Noun Stacking):** Favor unfolding dense noun clusters with prepositions (*the bandwidth of the memory*, *the innovation in architecture*) to keep text clear and natural.
+- **Active Simple Present Voice:** Favor direct simple present verbs (*"We talk about"*, *"you drop"*) over detached continuous narrations (*"We are discussing"*).
+- **Direct Practitioner Address (`you`, `your`):** Address the builder/practitioner directly (*"your loss function"*, *"your moves"*).
+- **Zero Participial Openers (`-ing` Sentence Starters):** NEVER open a sentence with an `-ing` participle or gerund. Always open sentences with a direct finite subject, a personal pronoun, or a temporal connective.
+- **Chain-Link Word Reuse Across Adjacent Sentences:** Natural thought leadership links adjacent sentences by carrying forward key anchor nouns across sentence boundaries.
+- **Plain Everyday English:** Use natural conversational connectors rather than formal academic fillers (*since*) or synthetic litotes formulas.
+- **Rhetorical Closure Options:** Close on an authentic engineering reality, a sharp unresolved trade-off, or a candid admission. Never close on generic advice, moralizing bows, or call-to-actions ("Thoughts?", "Agree?").
 - **Zero Emojis:** `0` emojis permitted anywhere in the post.
 - **Zero Hashtags by Default:** Do not append hashtags unless a single niche technical tag is strictly necessary.
+- **Zero @-Mentions or Twitter Handles in Post Body:** Never include '@' handles (e.g., do NOT write '@AnthropicAI' or '@sama'). Refer to companies and people by their natural names (*Anthropic*, *Sam Altman*).
 - **Zero Em Dashes or Double Hyphens:** Never use `—` or `--`. Use periods, commas, colons, or parentheses (sparingly) instead.
-- **Zero Semicolons in Short Posts:** Avoid `;` (elevated in AI prose); split into two crisp sentences or use a colon for direct elaboration.
+- **Zero Semicolons in Short Posts:** Avoid `;`; split into crisp sentences.
 - **No Mid-Sentence Bolding or Bullet Listicles:** Write in clean, flowing paragraphs without bolded keywords or markdown bullet stacks.
+- **No Policy Paper / Moralizing Endings:** Never end with a generic policy pitch, governance proposal, or moralizing bow.
 
-## 3. Deterministic Banned Language (Zero Tolerance)
+## 3. Stylistic Anti-Patterns & Clichés
 
-### A. Banned AI Marker Words (`ai_writing_signals.md` Tier 1 & Tier 2)
-`delve`, `underscore`, `showcase`, `tapestry`, `camaraderie`, `palpable`, `unease`, `intricate`, `meticulous`, `pivotal`, `multifaceted`, `realm`, `landscape`, `testament`, `robust`, `seamless`, `leverage`, `harness`, `unlock`, `elevate`, `foster`, `crucial`, `groundbreaking`, `revolutionize`, `game-changer`, `game changer`, `synergy`, `streamline`, `holistic`, `paradigm shift`, `move the needle`.
+### A. AI Clichés & Overused Tropes
+Avoid empty AI tropes and inflated prose:
+`delve`, `tapestry`, `palpable`, `intricate`, `meticulous`, `pivotal`, `multifaceted`, `realm`, `testament`, `robust`, `seamless`, `leverage`, `harness`, `unlock`, `elevate`, `foster`, `groundbreaking`, `revolutionize`, `game-changer`, `synergy`, `streamline`, `holistic`, `paradigm shift`, `move the needle`.
 
-### B. Banned Discourse Phrases & Syntactic Patterns
+### B. Discouraged Discourse Phrases & Syntactic Patterns
+- **Formulaic Contrast Slogans:** `"It has never been a matter of"`, `"It has always been about"`.
 - **Frame & Hook Clichés:** `"Here's the thing"`, `"It's worth noting"`, `"At its core"`, `"Let's unpack"`, `"Needless to say"`, `"In today's fast-paced world"`, `"Excited to share"`, `"Thrilled to"`.
-- **Formulaic Transitions:** `"Additionally,"`, `"Moreover,"`, `"Furthermore,"`, `"Consequently,"`, `"Thus,"`, `"Therefore,"`, `"In conclusion,"`, `"On the one hand... on the other hand"`.
-- **Negative Parallelisms:** `"It's not X, it's Y"`, `"This isn't about X, it's about Y"`, `"Less about X, more about Y"`.
-- **Participial Clauses:** Never open or close a sentence with an `-ing` participial modifier (e.g., `"Building on this foundation, the team..."` or `"...highlighting the need for..."`).
-- **Weak Epistemic Hedges:** `"may suggest"`, `"might indicate"`, `"could potentially"`, `"appears to be"`, `"tends to"`.
+- **Formulaic Transitions:** `"Additionally,"`, `"Moreover,"`, `"Furthermore,"`, `"Consequently,"`, `"Thus,"`, `"Therefore,"`, `"In conclusion,"`.
+- **Negative Parallelisms:** `"It's not X, it's Y"`, `"This isn't about X, it's about Y"`.
+- **Participial Clauses:** Never open or close a sentence with an `-ing` participial modifier.
+- **Weak Epistemic Hedges:** `"may suggest"`, `"might indicate"`, `"could potentially"`.
 - **Conversational Bait:** `"I couldn't agree more"`, `"Spot on"`, `"Thoughts?"`, `"Agree?"`.
 
 ## 4. Negative Identity & Factual Boundaries (NEVER Claim)

@@ -1,4 +1,5 @@
 """Unit tests for RSS 2.0 and Atom feed parsing, UTC normalization, and error isolation."""
+
 from datetime import UTC, datetime, timedelta
 
 import httpx
@@ -239,4 +240,3 @@ async def test_tweet_ingestion_agent_multisource() -> None:
     assert result[KEY_SELECTED_ITEM]["id"] == candidate_items[0]["id"]
     assert result[KEY_SELECTED_TWEET]["tweet_id"] == "1111"
     assert len(result[KEY_CANDIDATE_TWEETS]) == 1
-

@@ -1,4 +1,5 @@
 """Unit tests for HTML article body extraction and lead image resolution."""
+
 from pathlib import Path
 from typing import Any
 
@@ -57,21 +58,31 @@ async def test_extract_article_body_and_image(tmp_path: Path) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         url_str = str(request.url)
         if "sqlite-banner.jpg" in url_str:
-            return httpx.Response(200, content=fake_png_bytes, headers={"Content-Type": "image/jpeg"})
+            return httpx.Response(
+                200, content=fake_png_bytes, headers={"Content-Type": "image/jpeg"}
+            )
         if "arstechnica.com" in url_str:
-            return httpx.Response(200, text=SAMPLE_HTML_WITH_IMAGE, headers={"Content-Type": "text/html"})
+            return httpx.Response(
+                200, text=SAMPLE_HTML_WITH_IMAGE, headers={"Content-Type": "text/html"}
+            )
         return httpx.Response(404)
 
     transport = httpx.MockTransport(handler)
     async with httpx.AsyncClient(transport=transport) as client:
-        extractor = ArticleExtractor(client=client, image_output_dir=tmp_path / "images")
-        article: ExtractedArticle = await extractor.extract(article_url, publication_name="Ars Technica")
+        extractor = ArticleExtractor(
+            client=client, image_output_dir=tmp_path / "images"
+        )
+        article: ExtractedArticle = await extractor.extract(
+            article_url, publication_name="Ars Technica"
+        )
 
     assert article.url == article_url
     assert article.publication_name == "Ars Technica"
     assert article.domain == "arstechnica.com"
     assert article.title == "SQLite 3.48 Adds Concurrent Transaction Improvements"
-    assert "WAL-mode database locking is often the quiet bottleneck" in article.full_text
+    assert (
+        "WAL-mode database locking is often the quiet bottleneck" in article.full_text
+    )
     assert "Benchmark results indicate a 35% reduction" in article.full_text
     # Boilerplate stripped
     assert "Ad content that should be stripped" not in article.full_text
@@ -93,11 +104,15 @@ async def test_extract_article_no_image_fallback(tmp_path: Path) -> None:
     article_url = "https://theverge.com/tech/no-image-story"
 
     def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, text=SAMPLE_HTML_NO_IMAGE, headers={"Content-Type": "text/html"})
+        return httpx.Response(
+            200, text=SAMPLE_HTML_NO_IMAGE, headers={"Content-Type": "text/html"}
+        )
 
     transport = httpx.MockTransport(handler)
     async with httpx.AsyncClient(transport=transport) as client:
-        extractor = ArticleExtractor(client=client, image_output_dir=tmp_path / "images")
+        extractor = ArticleExtractor(
+            client=client, image_output_dir=tmp_path / "images"
+        )
         article = await extractor.extract(article_url, publication_name="The Verge")
 
     assert article.url == article_url
@@ -129,12 +144,18 @@ async def test_relative_image_url_resolution(tmp_path: Path) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         url_str = str(request.url)
         if "/static/assets/cover.png" in url_str:
-            return httpx.Response(200, content=fake_img, headers={"Content-Type": "image/png"})
-        return httpx.Response(200, text=html_with_rel_img, headers={"Content-Type": "text/html"})
+            return httpx.Response(
+                200, content=fake_img, headers={"Content-Type": "image/png"}
+            )
+        return httpx.Response(
+            200, text=html_with_rel_img, headers={"Content-Type": "text/html"}
+        )
 
     transport = httpx.MockTransport(handler)
     async with httpx.AsyncClient(transport=transport) as client:
-        extractor = ArticleExtractor(client=client, image_output_dir=tmp_path / "images")
+        extractor = ArticleExtractor(
+            client=client, image_output_dir=tmp_path / "images"
+        )
         article = await extractor.extract("https://example.org/blog/post-1")
 
     assert article.has_image is True
@@ -144,7 +165,9 @@ async def test_relative_image_url_resolution(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_article_extraction_agent_extracts_when_news_article_selected(tmp_path: Path) -> None:
+async def test_article_extraction_agent_extracts_when_news_article_selected(
+    tmp_path: Path,
+) -> None:
     from unittest.mock import AsyncMock
 
     from src.agent.extraction import ArticleExtractionAgent
@@ -176,9 +199,58 @@ async def test_article_extraction_agent_extracts_when_news_article_selected(tmp_
     delta = await agent._extract(state)
     assert KEY_EXTRACTED_ARTICLE in delta
     assert delta[KEY_EXTRACTED_ARTICLE]["title"] == "Test Article Headline"
-    assert delta[KEY_EXTRACTED_ARTICLE]["full_text"] == "Complete body text without truncation."
+    assert (
+        delta[KEY_EXTRACTED_ARTICLE]["full_text"]
+        == "Complete body text without truncation."
+    )
     mock_extractor.extract.assert_awaited_once_with(
         "https://arstechnica.com/test", publication_name="Ars Technica"
+    )
+
+
+@pytest.mark.asyncio
+async def test_article_extraction_agent_passes_image_query_and_credits() -> None:
+    from unittest.mock import AsyncMock
+
+    from src.agent.extraction import ArticleExtractionAgent
+    from src.agent.state import KEY_EXTRACTED_ARTICLE, KEY_SELECTED_ITEM
+
+    fake_article = ExtractedArticle(
+        url="https://techcrunch.com/test",
+        title="Tesla Roadster",
+        publication_name="TechCrunch",
+        domain="techcrunch.com",
+        full_text="SpaceX thrusters on the Roadster.",
+        word_count=5,
+        has_image=True,
+        image_credit="Image Credits:Tesla",
+    )
+    mock_extractor = AsyncMock(spec=ArticleExtractor)
+    mock_extractor.extract.return_value = fake_article
+
+    agent = ArticleExtractionAgent(extractor=mock_extractor)
+    state = {
+        KEY_SELECTED_ITEM: {
+            "id": "item123",
+            "source_type": "news_article",
+            "title": "Tesla Roadster",
+            "url": "https://techcrunch.com/test",
+            "author_or_source": "TechCrunch",
+            "raw_payload": {
+                "target_image_caption": "Tesla roadster event",
+                "target_image_credits": "Image Credits:Tesla",
+            },
+        }
+    }
+
+    delta = await agent._extract(state)
+    assert KEY_EXTRACTED_ARTICLE in delta
+    assert delta[KEY_EXTRACTED_ARTICLE]["image_credit"] == "Image Credits:Tesla"
+    mock_extractor.extract.assert_awaited_once_with(
+        "https://techcrunch.com/test",
+        publication_name="TechCrunch",
+        image_query="Tesla roadster event",
+        preferred_image_credit="Image Credits:Tesla",
     )
 
 
@@ -258,5 +330,3 @@ async def test_article_extraction_agent_author_fallback_from_raw_payload() -> No
     delta = await agent._extract(state)
     assert KEY_EXTRACTED_ARTICLE in delta
     assert delta[KEY_EXTRACTED_ARTICLE]["author"] == "Anthony Ha"
-
-
